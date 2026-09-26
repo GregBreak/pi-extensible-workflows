@@ -110,7 +110,7 @@ async function serve(routes: ReadonlyMap<string, RouteBody>): Promise<{ url: str
     const path = new URL(request.url || "/", "http://127.0.0.1").pathname;
     const body = routes.get(path);
     if (body === undefined) { response.writeHead(404); response.end(); return; }
-    response.writeHead(200, { "content-type": path.endsWith(".js") ? "text/javascript" : "text/html" });
+    response.writeHead(200, { "content-type": path.endsWith(".js") ? "text/javascript" : path.endsWith(".css") ? "text/css" : "text/html" });
     response.end(body);
   });
   await new Promise<void>((resolve, reject) => { server.once("error", reject); server.listen(0, "127.0.0.1", resolve); });
@@ -712,4 +712,118 @@ void test("Pinned Archify E0 sandbox spike bounded profile proves external asset
       }
     });
   } finally { await server.close(); }
+});
+
+
+void test("Trajectory lazy Semantic Map uses an opaque private bridge and existing transcript RPC", { skip: !browserPath, timeout: 120_000 }, async () => {
+  const source = readFileSync(new URL("../src/assets/index.html", import.meta.url), "utf8");
+  const bootstrap = `<script>(function(){const C=window.MessageChannel,addFrameListener=HTMLIFrameElement.prototype.addEventListener,get=crypto.getRandomValues.bind(crypto),send=MessagePort.prototype.postMessage,handler=Object.getOwnPropertyDescriptor(MessagePort.prototype,'onmessage');window.__NativeMessageChannel=C;window.__holdMapBootstrap=true;HTMLIFrameElement.prototype.addEventListener=function(type,listener,options){if(type==='load'&&this.getAttribute('sandbox')==='allow-scripts'&&window.__holdMapBootstrap){window.__deferredMapLoad={frame:this,callback:listener};return Reflect.apply(addFrameListener,this,[type,event=>{window.__deferredMapEvent=event},options])}return Reflect.apply(addFrameListener,this,[type,listener,options])};window.__channels=0;window.__mapTokens=[];window.__themes=[];window.__mapSnapshots=[];window.__heldAcks=[];window.__holdMapAck=true;crypto.getRandomValues=function(bytes){get(bytes);window.__mapTokens.push(Array.from(bytes,value=>value.toString(16).padStart(2,'0')).join(''));return bytes};MessagePort.prototype.postMessage=function(data,...transfer){if(data&&data.type==='theme')window.__themes.push(data.theme);if(data&&data.type==='snapshot')window.__mapSnapshots.push(data);return Reflect.apply(send,this,[data,...transfer])};window.MessageChannel=function(){window.__channels++;const channel=new C(),port=channel.port1;Object.defineProperty(port,'onmessage',{configurable:true,get(){return handler.get.call(this)},set(callback){handler.set.call(this,event=>{if(window.__holdMapAck&&event.data&&event.data.type==='ack'){window.__heldAcks.push(event);return}callback(event)})}});return window.__mapChannel=channel};window.__sockets=[];class S{constructor(){this.readyState=1;this.listeners={};this.sent=[];window.__sockets.push(this);window.__socket=this;setTimeout(()=>this.emit('open',{}),0)}addEventListener(t,f){(this.listeners[t] ||= []).push(f)}send(v){this.sent.push(JSON.parse(v))}close(){this.readyState=3}emit(t,e){for(const f of this.listeners[t]||[])f(e)}}window.WebSocket=S})();</script>`;
+  const html = source.replace(/\x20{2}<script>\r?\n\x20{4}const defaultRunLayout/, `${bootstrap}\n  <script>\n    const defaultRunLayout`);
+  assert.notEqual(html, source);
+  const paths = ["/index.html", "/marked.min.js", "/morphdom.min.js", "/prism.min.js", "/semantic-map.html", "/semantic-map.js", "/semantic-map.css"];
+  const files = [html, ...["marked.min.js", "morphdom.min.js", "prism.min.js", "semantic-map.html", "semantic-map.js", "semantic-map.css"].map((name) => readFileSync(new URL(`../src/assets/${name}`, import.meta.url)))];
+  const routes = new Map(paths.map((path, index) => [path, files[index] as RouteBody]));
+  const requests: { path: string; referrer: string }[] = [];
+  const server = createServer((request, response) => {
+    const url = new URL(request.url || "/", "http://127.0.0.1"); requests.push({ path: url.pathname, referrer: request.headers.referer || "" });
+    const body = routes.get(url.pathname); if (body === undefined) { response.writeHead(404); response.end(); return; }
+    const child = url.pathname.startsWith("/semantic-map.");
+    response.setHeader("content-security-policy", child ? "default-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src data:; font-src data:; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'" : "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; connect-src 'self'; frame-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'");
+    response.setHeader("content-type", url.pathname.endsWith(".js") ? "text/javascript" : url.pathname.endsWith(".css") ? "text/css" : "text/html"); response.end(body);
+  });
+  await new Promise<void>((resolve, reject) => { server.once("error", reject); server.listen(0, "127.0.0.1", resolve); });
+  const address = server.address(); assert.ok(address && typeof address !== "string");
+  try {
+    await withChrome(`http://127.0.0.1:${String(address.port)}/index.html`, async (page) => {
+      await waitFor(page, "Boolean(window.__socket)");
+      const fixture = makeState({ status: "pending" }, "running");
+      const record = ((fixture.publishers as CdpRecord[])[0]?.runs as CdpRecord[])[0]?.run as CdpRecord;
+      record.transcripts = { agent: { revision: 1, status: "available", timing: [] } };
+      await page.evaluate(`window.__socket.emit('message',{data:${JSON.stringify(JSON.stringify(fixture))}})`);
+      await waitFor(page, "Boolean(document.querySelector('.workflow-head'))");
+      assert.equal(await page.evaluate("document.querySelectorAll('#semantic-map-host iframe').length"), 0);
+      assert.equal(await page.evaluate("window.__channels"), 0);
+      assert.equal(requests.some((item) => item.path.startsWith("/semantic-map.")), false);
+      assert.equal(await page.evaluate("window.__sockets.length"), 1);
+      await page.evaluate(clickExpression("#semantic-map-tab"));
+      await waitFor(page, "document.querySelector('#semantic-map-host iframe') && window.__deferredMapLoad");
+      await delay(120);
+      const wrongSourceScript = "const channel=new MessageChannel();parent.__attackPort=channel.port1;parent.__attackMessages=[];channel.port1.onmessage=event=>parent.__attackMessages.push(event.data);const pending=parent.__deferredMapLoad;const [nonce,instance]=parent.__mapTokens;pending.frame.contentWindow.postMessage({channel:'pi-workflows-semantic-map',type:'bootstrap',version:1,nonce,instance},'*',[channel.port2]);";
+      await page.evaluate(`(()=>{const attacker=document.createElement('iframe');document.body.append(attacker);const script=attacker.contentDocument.createElement('script');script.textContent=${JSON.stringify(wrongSourceScript)};attacker.contentDocument.body.append(script);window.__attackFrame=attacker})()`);
+      await waitFor(page, "Boolean(window.__attackPort)");
+      await delay(100);
+      assert.equal(await page.evaluate("window.__attackMessages.length"), 0, "the child rejects a valid-looking bootstrap from a different source window");
+      await page.evaluate("window.__holdMapBootstrap=false;const pending=window.__deferredMapLoad;pending.callback.call(pending.frame,window.__deferredMapEvent)");
+      await waitFor(page, "window.__mapSnapshots.length===1 && window.__heldAcks.length===1");
+      assert.deepEqual(await page.evaluate("(()=>{const f=document.querySelector('#semantic-map-host iframe');return [f.getAttribute('sandbox'),f.getAttribute('referrerpolicy'),f.sandbox.contains('allow-same-origin')]})()"), ["allow-scripts", "no-referrer", false]);
+      assert.equal(await page.evaluate("window.__channels"), 1);
+      await waitFor(page, "window.__mapSnapshots.length===1 && window.__heldAcks.length===1");
+      for (const state of ["completed", "running", "completed", "running", "completed", "running", "completed", "completed"] as const) {
+        const update = makeState({ status: state === "completed" ? "available" : "pending" }, state);
+        const run = ((update.publishers as CdpRecord[])[0]?.runs as CdpRecord[])[0]?.run as CdpRecord;
+        run.transcripts = { agent: { revision: 1, status: "available", timing: [] } };
+        await page.evaluate(`window.__socket.emit('message',{data:${JSON.stringify(JSON.stringify(update))}})`);
+        await delay(35);
+      }
+      assert.equal(await page.evaluate("window.__mapSnapshots.length"), 1, "slow acknowledgement keeps only one active snapshot while newer updates replace the pending one");
+      await page.evaluate("window.__holdMapAck=false;window.__mapChannel.port1.onmessage(window.__heldAcks.shift())");
+      await waitFor(page, "window.__mapSnapshots.length===2");
+      assert.equal(await page.evaluate("window.__mapSnapshots[1].snapshot.run.agents[0].state"), "completed", "only the newest pending state is sent after acknowledgement");
+      assert.ok(await page.evaluate("window.__themes.length >= 1"), "the active iframe receives the selected parent theme over its private port");
+      await page.evaluate("document.querySelector('[data-theme-toggle]').click()");
+      await waitFor(page, "window.__themes.length >= 2");
+      assert.ok(["light", "dark"].includes(String(await page.evaluate("window.__themes.at(-1)"))));
+      assert.ok(requests.some((item) => item.path === "/semantic-map.html" && !item.referrer));
+      assert.ok(requests.some((item) => item.path === "/semantic-map.js") && requests.some((item) => item.path === "/semantic-map.css"));
+      await page.evaluate(`(()=>{const duplicate=new window.__NativeMessageChannel();window.__duplicateMessages=[];duplicate.port1.onmessage=event=>window.__duplicateMessages.push(event.data);duplicate.port1.start();const [nonce,instance]=window.__mapTokens;document.querySelector('#semantic-map-host iframe').contentWindow.postMessage({channel:'pi-workflows-semantic-map',type:'bootstrap',version:1,nonce,instance},'*',[duplicate.port2]);window.__duplicatePort=duplicate.port1})()`);
+      await delay(100);
+      assert.equal(await page.evaluate("window.__duplicateMessages.length"), 0, "duplicate bootstrap cannot initialize a second private port");
+      const nodeId = `sm-${Buffer.from(JSON.stringify(["publisher", "run", "run", "", "agent", "agent"]), "utf8").toString("hex")}`;
+      assert.deepEqual(await page.evaluate("[window.__mapTokens.length,typeof window.__mapChannel.port1.onmessage]"), [2, "function"]);
+      await page.evaluate(`(()=>{const p=window.__mapChannel.port1.onmessage,[nonce,instance]=window.__mapTokens;const base={type:'detail',version:1,nonce,instance,epoch:1,nodeId:${JSON.stringify(nodeId)}};for(const attack of [{...base,nonce:'0'.repeat(64)},{...base,version:99},{...base,instance:'0'.repeat(64)},{...base,nodeId:'sm-00'},{...base,type:'action'},{...base,padding:'x'.repeat(512*1024)}])p({data:attack});return window.__socket.sent.filter((item)=>item.type==='ui:transcript').length})()`);
+      assert.equal(await page.evaluate("window.__socket.sent.filter((item)=>item.type==='ui:transcript').length"), 0, "invalid, out-of-scope, control, and oversized requests are rejected");
+      await page.evaluate(`(()=>{const [nonce,instance]=window.__mapTokens;window.__mapChannel.port1.onmessage({data:{type:'detail',version:1,nonce,instance,epoch:1,nodeId:${JSON.stringify(nodeId)}}})})()`);
+      await waitFor(page, "document.body.dataset.view==='agent' && window.__socket.sent.some((item)=>item.type==='ui:transcript')");
+      assert.equal(await page.evaluate("window.__socket.sent.filter((item)=>item.type==='ui:transcript').length"), 1);
+      assert.equal(await page.evaluate("window.__sockets.length"), 1);
+      await page.evaluate("document.getElementById('run-crumb').click()"); await waitFor(page, "document.body.dataset.view==='run'");
+      await page.evaluate(clickExpression("#timeline-tab")); await waitFor(page, "document.querySelectorAll('#semantic-map-host iframe').length===0");
+      const channelsBeforeCancel = await page.evaluate("window.__channels");
+      await page.evaluate("document.getElementById('semantic-map-tab').click();document.getElementById('timeline-tab').click()");
+      await delay(300);
+      assert.equal(await page.evaluate("document.querySelectorAll('#semantic-map-host iframe').length"), 0, "closing before load prevents a stale callback from reviving the frame");
+      assert.equal(await page.evaluate("window.__channels"), channelsBeforeCancel, "no port is retained for a frame closed before readiness");
+      await page.evaluate("document.getElementById('timeline-tab').focus();document.getElementById('projection-tabs').dispatchEvent(new KeyboardEvent('keydown',{key:'ArrowRight',bubbles:true}))");
+      await waitFor(page, "document.querySelector('#semantic-map-host iframe') && document.getElementById('semantic-map-tab').getAttribute('aria-selected')==='true'");
+      await page.evaluate(clickExpression("#semantic-map-close")); await waitFor(page, "document.querySelectorAll('#semantic-map-host iframe').length===0 && document.getElementById('timeline-tab').getAttribute('aria-selected')==='true'");
+      assert.ok(requests.filter((item) => item.path.startsWith("/semantic-map.")).every((item) => ["/semantic-map.html", "/semantic-map.js", "/semantic-map.css"].includes(item.path)));
+    });
+  } finally { await new Promise<void>((resolve) => { server.close(() => { resolve(); }); }); }
+});
+
+
+void test("Trajectory static export gives a live-only explanation without map requests", { skip: !browserPath, timeout: 120_000 }, async () => {
+  const source = readFileSync(new URL("../src/assets/index.html", import.meta.url), "utf8");
+  const state = makeState({ status: "pending" }, "running");
+  const html = source.replace(/\x20{2}<script>\r?\n\x20{4}const defaultRunLayout/, `<script>window.__PIEWF_STATIC__=${JSON.stringify(state)};</script>\n  <script>\n    const defaultRunLayout`);
+  assert.notEqual(html, source);
+  const requests: string[] = [];
+  const routes = new Map<string, RouteBody>([["/index.html", html], ["/marked.min.js", readFileSync(new URL("../src/assets/marked.min.js", import.meta.url))], ["/morphdom.min.js", readFileSync(new URL("../src/assets/morphdom.min.js", import.meta.url))], ["/prism.min.js", readFileSync(new URL("../src/assets/prism.min.js", import.meta.url))]]);
+  const server = createServer((request, response) => {
+    const path = new URL(request.url || "/", "http://127.0.0.1").pathname; requests.push(path);
+    const body = routes.get(path); response.setHeader("content-type", path.endsWith(".js") ? "text/javascript" : "text/html");
+    if (body === undefined) { response.writeHead(404); response.end(); } else { response.writeHead(200); response.end(body); }
+  });
+  await new Promise<void>((resolve, reject) => { server.once("error", reject); server.listen(0, "127.0.0.1", resolve); });
+  const address = server.address(); assert.ok(address && typeof address !== "string");
+  try {
+    await withChrome(`http://127.0.0.1:${String(address.port)}/index.html`, async (page) => {
+      await waitFor(page, "Boolean(document.querySelector('.workflow-head'))");
+      await page.evaluate(clickExpression("#semantic-map-tab"));
+      assert.match(String(await page.evaluate("document.getElementById('semantic-map-status').textContent")), /static export/i);
+      assert.equal(await page.evaluate("document.querySelectorAll('#semantic-map-host iframe').length"), 0);
+      assert.equal(requests.some((path) => path.startsWith("/semantic-map.")), false);
+      assert.equal(requests.some((path) => path === "/ws"), false);
+    });
+  } finally { await new Promise<void>((resolve) => { server.close(() => { resolve(); }); }); }
 });
