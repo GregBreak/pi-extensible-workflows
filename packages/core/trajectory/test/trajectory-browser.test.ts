@@ -325,7 +325,20 @@ void test("Trajectory keeps a subagent transcript when a refresh races a newer r
   }
 });
 
-async function serveSemanticMapFeasibilityFixture(template: string): Promise<{ url: string; requests: string[]; close: () => Promise<void> }> {
+function applyFeasibilityFinderPatch(template: string): string {
+  const patches: unknown = JSON.parse(readFileSync(new URL("../../../trajectory/test/fixtures/semantic-map-feasibility/finder-live.patch.json", import.meta.url), "utf8"));
+  assert.ok(Array.isArray(patches));
+  let output = template;
+  for (const patch of patches as { find: string; replacement: string }[]) {
+    assert.equal(typeof patch.find, "string");
+    assert.equal(typeof patch.replacement, "string");
+    assert.equal(output.split(patch.find).length, 2, "pinned Finder patch anchor must match exactly once");
+    output = output.replace(patch.find, () => patch.replacement);
+  }
+  return output;
+}
+
+async function serveSemanticMapFeasibilityFixture(template: string, refreshFinder = false): Promise<{ url: string; requests: string[]; close: () => Promise<void> }> {
   const requests: string[] = [];
   const childProbe = `<script>
     (function () {
@@ -345,6 +358,13 @@ async function serveSemanticMapFeasibilityFixture(template: string): Promise<{ u
             node.setAttribute("data-node-id", "e0-live-node");
             node.setAttribute("data-node-label", "E0 Live Node");
             node.setAttribute("data-animate", "node");
+            node.setAttribute("tabindex", "0");
+            const shape = document.createElementNS("http://www.w3.org/2000/svg", "rect");
+            shape.setAttribute("x", "100");
+            shape.setAttribute("y", "100");
+            shape.setAttribute("width", "160");
+            shape.setAttribute("height", "60");
+            node.appendChild(shape);
             const label = document.createElementNS("http://www.w3.org/2000/svg", "text");
             label.textContent = "E0 Live Node";
             node.appendChild(label);
@@ -352,15 +372,26 @@ async function serveSemanticMapFeasibilityFixture(template: string): Promise<{ u
             const inserted = Boolean(svg.querySelector('[data-node-id="e0-live-node"]'));
             node.setAttribute("data-node-status", "running");
             const statusUpdated = node.getAttribute("data-node-status") === "running";
+            const cameraAfterStatus = Archify.view.state();
+            const probeFinder = function () {
+              if (${JSON.stringify(refreshFinder)}) finder.refresh();
+              finder.open();
+              const input = document.getElementById("node-finder-input");
+              input.value = "e0-live-node";
+              input.dispatchEvent(new Event("input", { bubbles: true }));
+              return {
+                nodePresent: Boolean(svg.querySelector('[data-node-id="e0-live-node"]')),
+                count: finder.count,
+                searchResults: document.querySelectorAll("#node-finder-results .node-finder-result").length,
+                selected: finder.select("e0-live-node"),
+                activeFocus: Archify.focus.active()
+              };
+            };
+            // Probe while attached: failure after removal alone cannot demonstrate a stale index.
+            const whileInserted = probeFinder();
             node.remove();
-            const removed = !svg.querySelector('[data-node-id="e0-live-node"]');
-            finder.open();
-            const input = document.getElementById("node-finder-input");
-            input.value = "e0-live-node";
-            input.dispatchEvent(new Event("input", { bubbles: true }));
-            const searchResults = document.querySelectorAll("#node-finder-results .node-finder-result").length;
-            const selectedNewNode = finder.select("e0-live-node");
-            port.postMessage({ type: "mutation-result", origin: self.origin, sandboxOrigin: location.origin, initialCount, countAfterMutation: finder.count, inserted, statusUpdated, removed, searchResults, selectedNewNode, cameraBefore, cameraAfter: Archify.view.state(), frameWidth: document.querySelector(".diagram-container").clientWidth });
+            const afterRemoval = probeFinder();
+            port.postMessage({ type: "mutation-result", origin: self.origin, sandboxOrigin: location.origin, initialCount, inserted, statusUpdated, whileInserted, afterRemoval, cameraBefore, cameraAfterStatus, cameraAfter: Archify.view.state(), frameWidth: document.querySelector(".diagram-container").clientWidth });
           } else if (message.data?.type === "measure") {
             port.postMessage({ type: "measure-result", camera: Archify.view.state(), frameWidth: document.querySelector(".diagram-container").clientWidth });
           }
@@ -419,12 +450,13 @@ async function serveSemanticMapFeasibilityFixture(template: string): Promise<{ u
   return { url: `http://127.0.0.1:${String(address.port)}`, requests, close: () => new Promise<void>((resolve, reject) => { server.close((error) => { if (error) reject(error); else resolve(); }); }) };
 }
 
-void test("Pinned Archify E0 sandbox spike demonstrates static Finder index under live SVG mutation", { skip: !browserPath, timeout: 120_000 }, async () => {
+for (const refreshFinder of [false, true]) {
+void test(`Pinned Archify E0 sandbox spike ${refreshFinder ? "refreshes Finder with a localized patch" : "demonstrates the unpatched static Finder index"}`, { skip: !browserPath, timeout: 120_000 }, async () => {
   const fixture = readFileSync(new URL("../../../trajectory/test/fixtures/semantic-map-feasibility/archify-template.html", import.meta.url), "utf8").replace(/\r\n/g, "\n");
   assert.equal(Buffer.byteLength(fixture), 774_866);
   const { createHash } = await import("node:crypto");
   assert.equal(createHash("sha256").update(fixture).digest("hex"), "505f1c6baa9c2454475c048aa75df8abd867e680e7b3b794b9218a95a56fc370");
-  const server = await serveSemanticMapFeasibilityFixture(fixture);
+  const server = await serveSemanticMapFeasibilityFixture(refreshFinder ? applyFeasibilityFinderPatch(fixture) : fixture, refreshFinder);
   try {
     await withChrome(`${server.url}/`, async (page) => {
       await waitFor(page, `location.origin === ${JSON.stringify(server.url)}`);
@@ -444,17 +476,24 @@ void test("Pinned Archify E0 sandbox spike demonstrates static Finder index unde
       assert.equal(Number((ready as CdpRecord).initialNodeCount), 0);
       assert.equal(result.inserted, true);
       assert.equal(result.statusUpdated, true);
-      assert.equal(result.removed, true);
-      assert.equal(result.countAfterMutation, result.initialCount, "Finder retains the initial index size after the live SVG changed");
-      assert.equal(result.searchResults, 0, "a newly inserted SVG node is absent from Finder search");
-      assert.equal(result.selectedNewNode, false, "the upstream public selection API rejects the newly inserted node");
-      assert.deepEqual(result.cameraAfter, result.cameraBefore, "status/insert/remove does not change initial camera state");
+      const whileInserted = result.whileInserted as CdpRecord;
+      assert.equal(whileInserted.nodePresent, true, "search and selection must be probed BEFORE the inserted node is removed");
+      assert.equal(whileInserted.count, refreshFinder ? 1 : result.initialCount, "the localized refresh must index the attached node");
+      assert.equal(whileInserted.searchResults, refreshFinder ? 1 : 0, "search must see the attached node only after explicit refresh");
+      assert.equal(whileInserted.selected, refreshFinder, "the patched public selection API must accept the attached live node");
+      if (refreshFinder) assert.equal(whileInserted.activeFocus, "e0-live-node", "successful selection must actually focus the inserted graph node");
+      const afterRemoval = result.afterRemoval as CdpRecord;
+      assert.equal(afterRemoval.nodePresent, false, "removal is a separate observation after the live-node probe");
+      assert.equal(afterRemoval.count, result.initialCount);
+      assert.equal(afterRemoval.searchResults, 0);
+      assert.equal(afterRemoval.selected, false);
+      assert.deepEqual(result.cameraAfterStatus, result.cameraBefore, "insertion/status mutation does not move the camera before explicit selection");
       await page.command("Emulation.setDeviceMetricsOverride", { width: 1280, height: 900, deviceScaleFactor: 1, mobile: false });
       await page.evaluate("window.__semanticMapPort.postMessage({ type: 'measure' })");
       await waitFor(page, "window.__mapMessages?.some((message) => message.type === 'measure-result')");
       const measured = await page.evaluate("window.__mapMessages.find((message) => message.type === 'measure-result')") as CdpRecord;
       assert.ok(Number(measured.frameWidth) > 0, "opaque sandbox renders its local SVG after resize");
-      assert.equal((measured.camera as CdpRecord).scale, (result.cameraBefore as CdpRecord).scale);
+      assert.ok(Number.isFinite(Number((measured.camera as CdpRecord).scale)), "camera remains usable after graph mutation and resize");
       assert.deepEqual(server.requests.filter((path) => path.startsWith("/")), ["/", "/archify.html"], "the self-contained viewer makes no additional local requests or socket connections");
       assert.equal(browserRequests.some((url) => /^wss?:/i.test(url)), false, "the isolated viewer opens no WebSocket");
       for (let cycle = 0; cycle < 3; cycle += 1) {
@@ -465,3 +504,4 @@ void test("Pinned Archify E0 sandbox spike demonstrates static Finder index unde
     });
   } finally { await server.close(); }
 });
+}
