@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { execFileSync, spawn } from "node:child_process";
-import { createServer } from "node:http";
+import { createServer, type ServerResponse } from "node:http";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
@@ -26,7 +26,9 @@ async function waitFor(page: Devtools, expression: string): Promise<void> {
   throw new Error(`Chrome condition did not become true: ${expression}`);
 }
 function findBrowser(): string | undefined {
-  const candidates = [process.env.PI_TRAJECTORY_CHROME, "/usr/bin/chromium", "/usr/bin/google-chrome", "/usr/bin/chromium-browser"];
+  const configured = process.env.PI_TRAJECTORY_CHROME;
+  if (configured && existsSync(configured)) return configured;
+  const candidates = [configured, "/usr/bin/chromium", "/usr/bin/google-chrome", "/usr/bin/chromium-browser"];
   try {
     for (const version of readdirSync(join(homedir(), ".cache", "ms-playwright"))) candidates.push(join(homedir(), ".cache", "ms-playwright", version, "chrome-linux64", "chrome"));
   } catch { /* The browser cache is optional. */ }
@@ -47,7 +49,8 @@ class Devtools {
       try { message = JSON.parse(String(event.data)) as CdpMessage; } catch { return; }
       if (typeof message.method === "string") {
         const params = message.params && typeof message.params === "object" ? message.params as CdpRecord : {};
-        for (const listener of this.eventListeners.get(message.method) || []) listener(params);
+        const eventParams = typeof message.sessionId === "string" ? { ...params, __cdpSessionId: message.sessionId } : params;
+        for (const listener of this.eventListeners.get(message.method) || []) listener(eventParams);
       }
       if (typeof message.id !== "number") return;
       const request = this.pending.get(message.id);
@@ -61,9 +64,9 @@ class Devtools {
     listeners.add(listener);
     this.eventListeners.set(method, listeners);
   }
-  command(method: string, params: CdpRecord = {}): Promise<CdpMessage> {
+  command(method: string, params: CdpRecord = {}, sessionId?: string): Promise<CdpMessage> {
     const id = this.nextId++;
-    this.socket.send(JSON.stringify({ id, method, params }));
+    this.socket.send(JSON.stringify({ id, method, params, ...(sessionId === undefined ? {} : { sessionId }) }));
     return new Promise((resolve, reject) => { this.pending.set(id, { resolve, reject }); });
   }
   async evaluate(expression: string): Promise<unknown> {
@@ -72,6 +75,14 @@ class Devtools {
     const result = message.result as CdpRecord | undefined;
     const exception = result?.exceptionDetails as CdpRecord | undefined;
     if (exception) throw new Error(textValue(exception.description, textValue(exception.text, "Chrome evaluation failed")));
+    return (result?.result as CdpRecord | undefined)?.value;
+  }
+  async evaluateInContext(contextId: number, expression: string, sessionId?: string): Promise<unknown> {
+    const message = await this.command("Runtime.evaluate", { expression, contextId, returnByValue: true }, sessionId);
+    if (message.error) throw new Error(textValue((message.error as CdpRecord).message, "Chrome frame evaluation failed"));
+    const result = message.result as CdpRecord | undefined;
+    const exception = result?.exceptionDetails as CdpRecord | undefined;
+    if (exception) throw new Error(textValue(exception.description, textValue(exception.text, "Chrome frame evaluation failed")));
     return (result?.result as CdpRecord | undefined)?.value;
   }
   close(): void {
@@ -119,9 +130,9 @@ async function serve(routes: ReadonlyMap<string, RouteBody>): Promise<{ url: str
   return { url: `http://127.0.0.1:${String(address.port)}`, close: () => new Promise<void>((resolve, reject) => { server.close((error) => { if (error) reject(error); else resolve(); }); }) };
 }
 
-async function withChrome(url: string, callback: (page: Devtools) => Promise<void>): Promise<void> {
-  const browser = findBrowser();
-  assert.ok(browser, "Chromium is required for Trajectory browser verification");
+async function withChrome(url: string, callback: (page: Devtools, browser: Devtools) => Promise<void>): Promise<void> {
+  const browserExecutable = findBrowser();
+  assert.ok(browserExecutable, "Chromium is required for Trajectory browser verification");
   const portServer = createServer();
   await new Promise<void>((resolve, reject) => { portServer.once("error", reject); portServer.listen(0, "127.0.0.1", resolve); });
   const address = portServer.address();
@@ -129,21 +140,26 @@ async function withChrome(url: string, callback: (page: Devtools) => Promise<voi
   const port = address.port;
   await new Promise<void>((resolve, reject) => { portServer.close((error) => { if (error) reject(error); else resolve(); }); });
   const profile = mkdtempSync(join(tmpdir(), "pi-extensible-workflows-chrome-"));
-  const child = spawn(browser, ["--headless=new", "--no-sandbox", "--disable-gpu", "--disable-dev-shm-usage", "--no-first-run", "--no-default-browser-check", `--remote-debugging-port=${String(port)}`, `--user-data-dir=${profile}`, url], { stdio: ["ignore", "ignore", "pipe"] });
+  const child = spawn(browserExecutable, ["--headless=new", "--no-sandbox", "--disable-gpu", "--disable-dev-shm-usage", "--no-first-run", "--no-default-browser-check", `--remote-debugging-port=${String(port)}`, `--user-data-dir=${profile}`, url], { stdio: ["ignore", "ignore", "pipe"] });
   const stderr: string[] = [];
   child.stderr.setEncoding("utf8");
   child.stderr.on("data", (chunk: string) => { stderr.push(chunk); });
   const childExited = new Promise<void>((resolve) => { child.once("close", () => { resolve(); }); });
   let page: Devtools | undefined;
+  let browser: Devtools | undefined;
   try {
     page = await connectDevtools(await waitForDevtools(port, child, () => stderr.join("")));
+    const versionResponse = await fetch(`http://127.0.0.1:${String(port)}/json/version`);
+    const versionInfo = await versionResponse.json() as { webSocketDebuggerUrl?: unknown };
+    assert.equal(typeof versionInfo.webSocketDebuggerUrl, "string", "Chrome exposes a browser-level DevTools endpoint");
+    browser = await connectDevtools(String(versionInfo.webSocketDebuggerUrl));
     for (let attempt = 0; attempt < 100; attempt += 1) {
       if (await page.evaluate("document.readyState === 'complete'")) break;
       await delay(25);
     }
-    await callback(page);
+    await callback(page, browser);
   } finally {
-    page?.close();
+    page?.close(); browser?.close();
     child.kill("SIGTERM");
     await Promise.race([childExited, delay(2000)]);
     for (let attempt = 0; attempt < 10; attempt += 1) {
@@ -797,6 +813,20 @@ void test("Trajectory lazy Semantic Map uses an opaque private bridge and existi
       await waitFor(page, "document.querySelector('#semantic-map-host iframe') && document.getElementById('semantic-map-tab').getAttribute('aria-selected')==='true'");
       await page.evaluate(clickExpression("#semantic-map-close")); await waitFor(page, "document.querySelectorAll('#semantic-map-host iframe').length===0 && document.getElementById('timeline-tab').getAttribute('aria-selected')==='true'");
       assert.ok(requests.filter((item) => item.path.startsWith("/semantic-map.")).every((item) => ["/semantic-map.html", "/semantic-map.js", "/semantic-map.css"].includes(item.path)));
+
+      const snapshotsBeforeRenderClose = Number(await page.evaluate("window.__mapSnapshots.length"));
+      await page.evaluate("window.__holdMapAck=true;document.getElementById('semantic-map-tab').click()");
+      await waitFor(page, `window.__mapSnapshots.length===${String(snapshotsBeforeRenderClose + 1)} && window.__heldAcks.length===1`);
+      await page.evaluate("document.getElementById('timeline-tab').click()");
+      await waitFor(page, "document.querySelectorAll('#semantic-map-host iframe').length===0");
+      await page.evaluate("window.__holdMapAck=false;window.__mapChannel.port1.onmessage(window.__heldAcks.shift())");
+      await delay(300);
+      assert.equal(await page.evaluate("document.querySelectorAll('#semantic-map-host iframe').length"), 0, "closing with a rendered snapshot awaiting acknowledgement cannot revive the frame");
+      assert.equal(await page.evaluate("window.__mapSnapshots.length"), snapshotsBeforeRenderClose + 1, "a closed viewer receives no further snapshot");
+      assert.equal(await page.evaluate("document.getElementById('semantic-map-status').textContent"), "", "a delayed acknowledgement cannot update the closed map status");
+      const mapRequestsAtClose = requests.filter((item) => item.path.startsWith("/semantic-map.")).length;
+      await delay(150);
+      assert.equal(requests.filter((item) => item.path.startsWith("/semantic-map.")).length, mapRequestsAtClose, "a closed frame cannot initiate later asset requests");
     });
   } finally { await new Promise<void>((resolve) => { server.close(() => { resolve(); }); }); }
 });
@@ -826,4 +856,364 @@ void test("Trajectory static export gives a live-only explanation without map re
       assert.equal(requests.some((path) => path === "/ws"), false);
     });
   } finally { await new Promise<void>((resolve) => { server.close(() => { resolve(); }); }); }
+});
+
+void test("Trajectory production routes load all three Semantic Map assets in an opaque sandbox under served CSP", { skip: !browserPath, timeout: 120_000 }, async () => {
+  const root = mkdtempSync(join(tmpdir(), "trajectory-production-map-browser-"));
+  const probe = createServer();
+  await new Promise<void>((resolve, reject) => { probe.once("error", reject); probe.listen(0, "127.0.0.1", resolve); });
+  const probeAddress = probe.address(); assert.ok(probeAddress && typeof probeAddress !== "string");
+  const port = probeAddress.port;
+  await new Promise<void>((resolve, reject) => probe.close((error) => { if (error) reject(error); else resolve(); }));
+  const server = createTrajectoryServer(port, join(root, "trajectory.lock"), { fingerprint: "production-route-browser-test" });
+  const productionRequests: string[] = [];
+  server.on("request", (request) => { productionRequests.push(request.url ?? "/"); });
+  await new Promise<void>((resolve, reject) => { server.once("error", reject); server.listen(port, "127.0.0.1", resolve); });
+  const base = `http://127.0.0.1:${String(port)}`;
+  try {
+    await withChrome(`${base}/`, async (page) => {
+      await waitFor(page, "document.readyState === 'complete' && document.querySelector('.app') !== null && document.getElementById('semantic-map-host') !== null");
+      await page.command("Network.enable");
+      await page.command("Log.enable");
+      const securityErrors: string[] = [];
+      page.on("Log.entryAdded", (params) => {
+        const entry = params.entry as CdpRecord | undefined;
+        const text = typeof entry?.text === "string" ? entry.text : "";
+        if (/content security policy|refused to load/i.test(text)) securityErrors.push(text);
+      });
+      assert.equal(await page.evaluate("performance.getEntriesByType('resource').some((entry) => entry.name.includes('semantic-map.'))"), false, "no map asset request occurs before activation");
+      const nonce = "e".repeat(64), instance = "f".repeat(64);
+      await page.evaluate(`(()=>{const frame=document.createElement('iframe');frame.title='production route probe';frame.setAttribute('sandbox','allow-scripts');frame.setAttribute('referrerpolicy','no-referrer');frame.src='/semantic-map.html?embed=1&theme=dark';const channel=new MessageChannel();window.__productionMapMessages=[];window.__productionMapPort=channel.port1;channel.port1.onmessage=event=>window.__productionMapMessages.push(event.data);channel.port1.start();frame.addEventListener('load',()=>frame.contentWindow.postMessage({channel:'pi-workflows-semantic-map',type:'bootstrap',version:1,nonce:${JSON.stringify(nonce)},instance:${JSON.stringify(instance)}},'*',[channel.port2]),{once:true});window.__productionMapFrame=frame;document.getElementById('semantic-map-host').append(frame)})()`);
+      await waitFor(page, "window.__productionMapMessages.some((message) => message.type === 'ready')");
+      assert.deepEqual(await page.evaluate("[window.__productionMapFrame.sandbox.contains('allow-scripts'),window.__productionMapFrame.sandbox.contains('allow-same-origin')]"), [true, false]);
+      const snapshot = { scope: { publisherId: "publisher", targetKind: "run", targetId: "run" }, run: { id: "run", workflowName: "Production HTTP map", state: "running", agents: [{ id: "agent", name: "agent", state: "running", attempts: 1, attemptDetails: [], structuralPath: [], toolCalls: [] }] }, partial: { reasons: ["production route smoke"], omittedNodes: 0, omittedEdges: 0 } };
+      await page.evaluate(`window.__productionMapPort.postMessage({type:'snapshot',version:1,nonce:${JSON.stringify(nonce)},instance:${JSON.stringify(instance)},sequence:1,epoch:1,snapshot:${JSON.stringify(snapshot)}})`);
+      await waitFor(page, "window.__productionMapMessages.some((message) => message.type === 'ack' && Array.isArray(message.nodeIds) && message.nodeIds.length > 0)");
+      assert.ok(Number(await page.evaluate("window.__productionMapMessages.find((message) => message.type === 'ack').nodeIds.length")) >= 1);
+      const allowed = new Set(["/semantic-map.html", "/semantic-map.js", "/semantic-map.css"]);
+      const mapRequests = productionRequests.map((path) => new URL(path, base)).filter((url) => url.pathname.startsWith("/semantic-map."));
+      for (const request of mapRequests) {
+        assert.equal(request.origin, base, `external request denied: ${request.href}`);
+        assert.ok(allowed.has(request.pathname), `unexpected production request: ${request.href}`);
+      }
+      assert.deepEqual(new Set(mapRequests.map((request) => request.pathname)), allowed);
+      assert.equal(mapRequests.length, allowed.size, `the viewer requested exactly one HTML, JS, and CSS response: ${JSON.stringify(mapRequests)}`);
+      assert.equal(securityErrors.length, 0, securityErrors.join("\n"));
+      await page.evaluate("window.__productionMapPort.close();window.__productionMapFrame.remove()");
+    });
+  } finally {
+    server.closeAllConnections(); server.closeIdleConnections(); server.close(); server.unref();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+function semanticAgent(id: string, name: string, state: "running" | "completed" = "running"): Record<string, unknown> {
+  return {
+    id, name, label: name, state, attempts: 1, startedAt: Date.now(),
+    durationMs: state === "completed" ? 20 : undefined, structuralPath: ["e4-live-scope"],
+    attemptDetails: [{ attempt: 1, transport: "local", setup: { cwd: "E4-PRIVATE-CWD", systemPrompt: "E4-PRIVATE-PROMPT" } }],
+    prompt: "E4-PRIVATE-PROMPT", systemPrompt: "E4-PRIVATE-SYSTEM", args: { secret: "E4-PRIVATE-ARGS" },
+    output: { status: "available", value: "E4-PRIVATE-RESULT" }, tools: ["read"]
+  };
+}
+function semanticRun(id: string, name: string, agents: readonly Record<string, unknown>[], relations: readonly Record<string, unknown>[] = []): Record<string, unknown> {
+  return {
+    id, workflowName: name, cwd: "E4-PRIVATE-CWD", sessionId: "e4-live-session", state: "running", startedAt: Date.now(),
+    agents, relations, events: [], script: "E4-PRIVATE-SCRIPT", args: { secret: "E4-PRIVATE-ARGS" }
+  };
+}
+function publisherState(publisherId: string, runs: readonly Record<string, unknown>[]): string {
+  return JSON.stringify({
+    type: "publisher:state", publisher: { id: publisherId, title: "E4 production browser", cwd: "/project", sessionId: "e4-live-session", connected: true },
+    runs: runs.map((run) => ({ run, snapshot: { script: "E4-PRIVATE-SCRIPT", args: { secret: "E4-PRIVATE-ARGS" } }, transcripts: {} })), subagents: []
+  });
+}
+async function availableLoopbackPort(): Promise<number> {
+  const probe = createServer();
+  await new Promise<void>((resolve, reject) => { probe.once("error", reject); probe.listen(0, "127.0.0.1", resolve); });
+  const address = probe.address(); assert.ok(address && typeof address !== "string");
+  await new Promise<void>((resolve, reject) => probe.close((error) => { if (error) reject(error); else resolve(); }));
+  return address.port;
+}
+async function connectLivePublisher(port: number, publisherId: string): Promise<WebSocket> {
+  const publisher = new WebSocket(`ws://127.0.0.1:${String(port)}/ws`);
+  await new Promise<void>((resolve, reject) => {
+    publisher.addEventListener("open", () => { resolve(); }, { once: true });
+    publisher.addEventListener("error", () => { reject(new Error("Trajectory test publisher could not connect")); }, { once: true });
+  });
+  publisher.send(JSON.stringify({ type: "publisher:attach", publisherId }));
+  return publisher;
+}
+type SemanticMapFrameContext = { connection: Devtools; contextId: number; sessionId?: string };
+async function semanticMapHeap(browser: Devtools): Promise<{ targetId: string; usedSize: number; totalSize: number } | undefined> {
+  const targets = ((await browser.command("Target.getTargets")).result as CdpRecord | undefined)?.targetInfos;
+  if (!Array.isArray(targets)) return undefined;
+  const target = targets.map((value) => value as CdpRecord).find((value) => typeof value.url === "string" && value.url.includes("/semantic-map.html"));
+  if (typeof target?.targetId !== "string") return undefined;
+  const attached = await browser.command("Target.attachToTarget", { targetId: target.targetId, flatten: true });
+  const sessionId = (attached.result as CdpRecord | undefined)?.sessionId;
+  if (typeof sessionId !== "string") return undefined;
+  try {
+    await browser.command("HeapProfiler.enable", {}, sessionId);
+    await browser.command("Runtime.enable", {}, sessionId);
+    await browser.command("HeapProfiler.collectGarbage", {}, sessionId);
+    const measured = ((await browser.command("Runtime.getHeapUsage", {}, sessionId)).result as CdpRecord | undefined);
+    if (typeof measured?.usedSize !== "number" || typeof measured.totalSize !== "number") return undefined;
+    return { targetId: target.targetId, usedSize: measured.usedSize, totalSize: measured.totalSize };
+  } finally { await browser.command("Target.detachFromTarget", { sessionId }); }
+}
+
+async function semanticMapContext(page: Devtools, browser: Devtools): Promise<SemanticMapFrameContext> {
+  const treeResponse = await page.command("Page.getFrameTree");
+  const tree = (treeResponse.result as CdpRecord | undefined)?.frameTree as CdpRecord | undefined;
+  const findFrame = (node: CdpRecord | undefined): string | undefined => {
+    if (!node) return undefined;
+    const frame = node.frame as CdpRecord | undefined;
+    if (typeof frame?.url === "string" && frame.url.includes("/semantic-map.html")) return typeof frame.id === "string" ? frame.id : undefined;
+    const children = Array.isArray(node.childFrames) ? node.childFrames : [];
+    for (const child of children) { const found = findFrame(child as CdpRecord); if (found) return found; }
+    return undefined;
+  };
+  const frameId = findFrame(tree);
+  if (frameId) {
+    let contextId: number | undefined;
+    page.on("Runtime.executionContextCreated", (params) => {
+      const context = params.context as CdpRecord | undefined;
+      const auxiliary = context?.auxData as CdpRecord | undefined;
+      if (auxiliary?.frameId === frameId && auxiliary.isDefault === true && typeof context?.id === "number") contextId = context.id;
+    });
+    await page.command("Runtime.enable");
+    for (let attempt = 0; attempt < 100 && contextId === undefined; attempt += 1) await delay(20);
+    assert.ok(contextId !== undefined, "CDP exposes the live iframe execution context");
+    return { connection: page, contextId };
+  }
+
+  await browser.command("Target.setDiscoverTargets", { discover: true });
+  let targetInfo: CdpRecord | undefined;
+  for (let attempt = 0; attempt < 100 && !targetInfo; attempt += 1) {
+    const targets = ((await browser.command("Target.getTargets")).result as CdpRecord | undefined)?.targetInfos;
+    if (Array.isArray(targets)) targetInfo = targets.map((target) => target as CdpRecord).find((target) => typeof target.url === "string" && target.url.includes("/semantic-map.html"));
+    if (!targetInfo) await delay(20);
+  }
+  const targetId = targetInfo && typeof targetInfo.targetId === "string" ? targetInfo.targetId : undefined;
+  assert.ok(targetId, "Chrome discovers the opaque viewer as a separate frame target");
+  const attached = await browser.command("Target.attachToTarget", { targetId, flatten: true });
+  const rawSessionId = (attached.result as CdpRecord | undefined)?.sessionId;
+  const sessionId = typeof rawSessionId === "string" ? rawSessionId : undefined;
+  assert.ok(sessionId, "Chrome attaches a DevTools session to the opaque viewer target");
+  let contextId: number | undefined;
+  browser.on("Runtime.executionContextCreated", (params) => {
+    const context = params.context as CdpRecord | undefined;
+    const auxiliary = context?.auxData as CdpRecord | undefined;
+    if (params.__cdpSessionId === sessionId && auxiliary?.isDefault === true && typeof context?.id === "number") contextId = context.id;
+  });
+  await browser.command("Runtime.enable", {}, sessionId);
+  for (let attempt = 0; attempt < 100 && contextId === undefined; attempt += 1) await delay(20);
+  assert.ok(contextId !== undefined, "CDP exposes the separately targeted opaque viewer execution context");
+  return { connection: browser, contextId, sessionId };
+}
+
+void test("Trajectory live Semantic Map follows publisher WebSocket state through the production UI, bridge, and routes", { skip: !browserPath, timeout: 180_000 }, async (t) => {
+  const root = mkdtempSync(join(tmpdir(), "trajectory-live-semantic-map-"));
+  const port = await availableLoopbackPort();
+  const publisherId = "e4semanticpublisher";
+  const relationAgents = Array.from({ length: 18 }, (_, index) => semanticAgent(`agent-${String(index).padStart(2, "0")}`, index === 1 ? "Agent Beta" : `Agent ${String(index).padStart(2, "0")}`));
+  const relations = Array.from({ length: 9 }, (_, index) => ({ id: `relation-${String(index)}`, kind: index % 2 ? "dependency" : "fork", fromAgentId: `agent-${String(index).padStart(2, "0")}`, toAgentId: `agent-${String(index + 1).padStart(2, "0")}` }));
+  const firstRun = semanticRun("run-first", "E4 live first target", relationAgents, relations);
+  const secondRun = semanticRun("run-second", "E4 live second target", [semanticAgent("target-agent", "Agent Target")]);
+  const server = createTrajectoryServer(port, join(root, "trajectory.lock"), { fingerprint: "e4-live-semantic-map-browser" });
+  const httpRequests: { method: string; path: string; status?: number; bytes?: number }[] = [];
+  const socketConnections: { path: string; origin?: string }[] = [];
+  let replacement: WebSocket | undefined;
+  server.on("request", (request, response) => {
+    const url = new URL(request.url ?? "/", `http://127.0.0.1:${String(port)}`);
+    if (!url.pathname.startsWith("/semantic-map.")) return;
+    const record: { method: string; path: string; status?: number; bytes?: number } = { method: request.method ?? "", path: url.pathname };
+    httpRequests.push(record);
+    const writable = response as unknown as { end: (chunk?: string | Buffer) => ServerResponse };
+    const end = writable.end.bind(response);
+    writable.end = (chunk?: string | Buffer): ServerResponse => {
+      record.bytes = typeof chunk === "string" ? Buffer.byteLength(chunk) : chunk?.byteLength ?? 0;
+      return end(chunk);
+    };
+    response.once("finish", () => { record.status = response.statusCode; });
+  });
+  server.on("upgrade", (request) => { socketConnections.push({ path: request.url ?? "", ...(typeof request.headers.origin === "string" ? { origin: request.headers.origin } : {}) }); });
+  await new Promise<void>((resolve, reject) => { server.once("error", reject); server.listen(port, "127.0.0.1", resolve); });
+  const publisher = await connectLivePublisher(port, publisherId);
+  publisher.send(publisherState(publisherId, [firstRun, secondRun]));
+  const base = `http://127.0.0.1:${String(port)}`;
+  const startRef = `${publisherId}:run-first`;
+  const secondRef = `${publisherId}:run-second`;
+  try {
+    await withChrome(`${base}/?view=run&run=${encodeURIComponent(startRef)}`, async (page, browser) => {
+      await waitFor(page, "Boolean(document.querySelector('.workflow-head')) && document.body.dataset.view==='run'");
+      await page.command("Network.enable"); await page.command("Log.enable");
+      const browserUrls: string[] = [];
+      const cspErrors: string[] = [];
+      page.on("Network.requestWillBeSent", (params) => { const request = params.request as CdpRecord | undefined; if (typeof request?.url === "string") browserUrls.push(request.url); });
+      page.on("Log.entryAdded", (params) => {
+        const entry = params.entry as CdpRecord | undefined;
+        const text = typeof entry?.text === "string" ? entry.text : "";
+        if (/content security policy|refused to load/i.test(text)) cspErrors.push(text);
+      });
+      page.on("Runtime.exceptionThrown", (params) => { const details = params.exceptionDetails as CdpRecord | undefined; cspErrors.push(textValue(details?.text, "uncaught browser exception")); });
+      assert.equal(httpRequests.length, 0, "production UI does not eagerly request Semantic Map assets");
+      await page.evaluate(`(()=>{const descriptor=Object.getOwnPropertyDescriptor(MessagePort.prototype,'onmessage');window.__semanticChildRequests=[];Object.defineProperty(MessagePort.prototype,'onmessage',{configurable:true,get(){return descriptor.get.call(this)},set(callback){descriptor.set.call(this,event=>{if(event.data&&['select','detail'].includes(event.data.type))window.__semanticChildRequests.push(event.data);callback(event)})}})})()`);
+      assert.ok(await page.evaluate(`[...document.querySelectorAll('#sidebar [data-run]')].some((button) => button.dataset.run === ${JSON.stringify(secondRef)})`), "publisher exposes the alternate live run target");
+      await page.evaluate("window.__semanticMapStarted=performance.now();document.getElementById('semantic-map-tab').click()");
+      await waitFor(page, "document.querySelector('#semantic-map-host iframe') && document.getElementById('semantic-map-status').textContent.startsWith('Partial graph')");
+      const firstReadyMs = Number(await page.evaluate("performance.now()-window.__semanticMapStarted"));
+      assert.ok(firstReadyMs > 0 && Number.isFinite(firstReadyMs));
+      assert.equal(await page.evaluate("document.querySelector('#semantic-map-host iframe').sandbox.contains('allow-scripts') && !document.querySelector('#semantic-map-host iframe').sandbox.contains('allow-same-origin')"), true);
+      const frameContext = await semanticMapContext(page, browser);
+      const evaluateMap = (expression: string): Promise<unknown> => frameContext.connection.evaluateInContext(frameContext.contextId, expression, frameContext.sessionId);
+      const firstGraph = await evaluateMap(`(()=>({nodes:[...document.querySelectorAll('.semantic-map-node')].map(node=>({id:node.getAttribute('data-node-id'),label:node.getAttribute('data-node-label'),kind:node.getAttribute('data-node-kind')})),notice:document.getElementById('semantic-map-completeness')?.textContent||'',origin:self.origin,locationOrigin:location.origin,body:document.body.textContent||''}))()` ) as CdpRecord;
+      const firstNodes = firstGraph.nodes as CdpRecord[];
+      assert.ok(firstNodes.length >= 17 && firstNodes.length <= 500, `bounded live graph includes root and projected agents; got ${String(firstNodes.length)}`);
+      assert.ok(firstNodes.every((node) => typeof node.id === "string" && /^sm-(?:[0-9a-f]{2})+$/.test(node.id)));
+      assert.ok(String(firstGraph.notice).includes("Partial graph"), "the 18-agent/9-relation source remains explicitly partial under projection limits");
+      assert.equal(String(firstGraph.origin), "null", "the production viewer has an opaque origin");
+      assert.equal(String(firstGraph.body).includes("E4-PRIVATE"), false, "prompts, scripts, args, environment, and output values never reach the map");
+      const selected = await evaluateMap(`(()=>{const node=[...document.querySelectorAll('.semantic-map-node')].find(candidate=>candidate.getAttribute('data-node-label')==='Agent Beta');if(!node)return null;node.dispatchEvent(new MouseEvent('click',{bubbles:true}));return {id:node.getAttribute('data-node-id')}})()` ) as CdpRecord | null;
+      assert.ok(selected);
+      await waitFor(page, `window.__semanticChildRequests.some(message=>message.type==='select'&&message.nodeId===${JSON.stringify(selected.id)})`);
+      await evaluateMap(`(()=>{const node=[...document.querySelectorAll('.semantic-map-node')].find(candidate=>candidate.getAttribute('data-node-label')==='Agent Beta');node.dispatchEvent(new MouseEvent('dblclick',{bubbles:true}))})()`);
+      await waitFor(page, "window.__semanticChildRequests.some(message=>message.type==='detail')");
+      await waitFor(page, "document.body.dataset.view==='agent' && document.getElementById('agent-crumb').textContent==='Agent Beta'");
+      await page.evaluate("document.getElementById('run-crumb').click()");
+      await waitFor(page, "document.body.dataset.view==='run'");
+      await page.evaluate(`[...document.querySelectorAll('#sidebar [data-run]')].find((button) => button.dataset.run === ${JSON.stringify(secondRef)}).click()`);
+      let targetUpdated = false;
+      for (let attempt = 0; attempt < 100 && !targetUpdated; attempt += 1) {
+        targetUpdated = await evaluateMap("[...document.querySelectorAll('.semantic-map-node')].some(node=>node.getAttribute('data-node-label')==='Agent Target')") as boolean;
+        if (!targetUpdated) await delay(25);
+      }
+      assert.equal(targetUpdated, true, "the currently selected run replaces prior target graph data");
+      assert.equal(await evaluateMap("[...document.querySelectorAll('.semantic-map-node')].some(node=>node.getAttribute('data-node-label')==='Agent Beta')"), false, "nodes from the previous target are removed");
+      replacement = await connectLivePublisher(port, publisherId);
+      replacement.send(publisherState(publisherId, [firstRun, semanticRun("run-second", "E4 live second target", [semanticAgent("target-agent", "Agent Target", "completed")])]));
+      publisher.close();
+      await waitFor(page, "document.body.dataset.view==='run'");
+      for (let attempt = 0; attempt < 100; attempt += 1) {
+        if (await evaluateMap("[...document.querySelectorAll('.semantic-map-node')].some(node=>node.getAttribute('data-node-label')==='Agent Target'&&node.getAttribute('data-node-status')==='success')")) break;
+        await delay(25);
+      }
+      assert.equal(await evaluateMap("[...document.querySelectorAll('.semantic-map-node')].some(node=>node.getAttribute('data-node-label')==='Agent Target'&&node.getAttribute('data-node-status')==='success')"), true, "publisher replacement generation and latest live status reach the selected scope");
+      await evaluateMap(`(()=>{const node=[...document.querySelectorAll('.semantic-map-node')].find(candidate=>candidate.getAttribute('data-node-label')==='Agent Target');node.dispatchEvent(new MouseEvent('click',{bubbles:true}));node.dispatchEvent(new MouseEvent('dblclick',{bubbles:true}))})()`);
+      await waitFor(page, "document.body.dataset.view==='agent' && document.getElementById('agent-crumb').textContent==='Agent Target'");
+      await page.evaluate("document.getElementById('run-crumb').click();document.getElementById('timeline-tab').click()");
+      await waitFor(page, "document.querySelectorAll('#semantic-map-host iframe').length===0");
+      const requestsWhenClosed = httpRequests.length;
+      await delay(350);
+      assert.equal(httpRequests.length, requestsWhenClosed, "closing the live map produces no later map-asset HTTP request");
+      assert.deepEqual(httpRequests.map((request) => request.path).slice(0, 3).sort(), ["/semantic-map.css", "/semantic-map.html", "/semantic-map.js"]);
+      assert.equal(httpRequests.length, 3, "scope and publisher generation updates reuse the active map without extra asset fetches");
+      assert.ok(httpRequests.every((request) => request.method === "GET" && request.status === 200 && (request.bytes ?? 0) > 0), JSON.stringify(httpRequests));
+      const rawAssetBytes = httpRequests.reduce((total, request) => total + (request.bytes ?? 0), 0);
+      const expectedAssetBytes = ["semantic-map.html", "semantic-map.js", "semantic-map.css"].reduce((total, name) => total + readFileSync(new URL(`../src/assets/${name}`, import.meta.url)).byteLength, 0);
+      assert.equal(rawAssetBytes, expectedAssetBytes, "observed uncompressed HTTP body bytes match the served raw asset files");
+      const mapUrls = browserUrls.filter((url) => url.includes("/semantic-map."));
+      assert.ok(mapUrls.every((url) => url.startsWith(base)), "the child makes no external request");
+      assert.equal(socketConnections.filter((connection) => connection.origin === base).length, 1, "the parent UI creates exactly one real WebSocket; viewer adds none");
+      assert.equal(socketConnections.length, 3, "the only other connections are the initial and replacement live publishers");
+      assert.ok(socketConnections.every((connection) => connection.path === "/ws"));
+      assert.deepEqual(cspErrors, [], cspErrors.join("\n"));
+      t.diagnostic(`Live map: tab-to-ready=${firstReadyMs.toFixed(1)} ms; raw HTTP asset bytes=${String(rawAssetBytes)}; requests=${JSON.stringify(httpRequests.map(({ path }) => path))}; external/CSP/console errors=0; map requests after close=0.`);
+    });
+  } finally {
+    publisher.close(); replacement?.close();
+    server.closeAllConnections(); server.closeIdleConnections(); server.close(); server.unref();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+void test("Trajectory Semantic Map closes and reopens cleanly for 50 live browser cycles with controlled GC measurements", { skip: !browserPath, timeout: 240_000 }, async (t) => {
+  const root = mkdtempSync(join(tmpdir(), "trajectory-semantic-map-soak-"));
+  const port = await availableLoopbackPort();
+  const publisherId = "e4soakpublisher";
+  const run = semanticRun("soak-run", "E4 live lifecycle soak", [semanticAgent("soak-agent", "Soak Agent")]);
+  const server = createTrajectoryServer(port, join(root, "trajectory.lock"), { fingerprint: "e4-semantic-map-soak" });
+  const mapRequests: string[] = [];
+  server.on("request", (request) => { const pathname = new URL(request.url ?? "/", `http://127.0.0.1:${String(port)}`).pathname; if (pathname.startsWith("/semantic-map.")) mapRequests.push(pathname); });
+  await new Promise<void>((resolve, reject) => { server.once("error", reject); server.listen(port, "127.0.0.1", resolve); });
+  const publisher = await connectLivePublisher(port, publisherId);
+  publisher.send(publisherState(publisherId, [run]));
+  const base = `http://127.0.0.1:${String(port)}`;
+  const samples: { cycle: number; usedSize: number; totalSize: number; resourceEntries: number }[] = [];
+  const iframeHeapSamples: { cycle: number; usedSize: number; totalSize: number }[] = [];
+  const iframeTargets = new Set<string>();
+  try {
+    await withChrome(`${base}/?view=run&run=${encodeURIComponent(`${publisherId}:soak-run`)}`, async (page, browser) => {
+      await waitFor(page, "Boolean(document.querySelector('.workflow-head'))");
+      await page.command("Network.enable"); await page.command("HeapProfiler.enable"); await page.command("Runtime.enable");
+      await browser.command("Target.setDiscoverTargets", { discover: true });
+      const closedFrameRequests: number[] = [];
+      const requestsPerCycle: string[][] = [];
+      const beforePreReadyClose = mapRequests.length;
+      await page.evaluate("document.getElementById('semantic-map-tab').click();document.getElementById('timeline-tab').click()");
+      await waitFor(page, "document.querySelectorAll('#semantic-map-host iframe').length===0");
+      const requestsAtPreReadyClose = mapRequests.length;
+      await delay(150);
+      assert.equal(mapRequests.length, requestsAtPreReadyClose, "closing before iframe readiness cannot initiate later asset requests");
+      const cycle = async (measureIframe = false, cycleNumber = 0): Promise<void> => {
+        const requestStart = mapRequests.length;
+        await page.evaluate("document.getElementById('semantic-map-tab').click()");
+        await waitFor(page, "document.querySelector('#semantic-map-host iframe') && document.getElementById('semantic-map-status').textContent.startsWith('Partial graph')");
+        assert.equal(await page.evaluate("document.querySelectorAll('#semantic-map-host iframe').length"), 1);
+        if (measureIframe) {
+          const heap = await semanticMapHeap(browser);
+          if (heap) { iframeTargets.add(heap.targetId); iframeHeapSamples.push({ cycle: cycleNumber, usedSize: heap.usedSize, totalSize: heap.totalSize }); }
+        }
+        await page.evaluate("document.getElementById('timeline-tab').click()");
+        await waitFor(page, "document.querySelectorAll('#semantic-map-host iframe').length===0");
+        const countAtClose = mapRequests.length;
+        await delay(35);
+        assert.equal(mapRequests.length, countAtClose, "closing an acknowledged viewer leaves no later asset request");
+        closedFrameRequests.push(countAtClose);
+        requestsPerCycle.push(mapRequests.slice(requestStart, countAtClose));
+      };
+      const warmupCycles = 10;
+      const requestsBeforeWarmup = mapRequests.length;
+      for (let warmup = 0; warmup < warmupCycles; warmup += 1) await cycle();
+      await page.command("HeapProfiler.collectGarbage");
+      const baselineResponse = await page.command("Runtime.getHeapUsage");
+      const baseline = baselineResponse.result as CdpRecord | undefined;
+      assert.ok(typeof baseline?.usedSize === "number" && typeof baseline.totalSize === "number");
+      samples.push({ cycle: 0, usedSize: baseline.usedSize, totalSize: baseline.totalSize, resourceEntries: Number(await page.evaluate("performance.getEntriesByType('resource').filter(entry=>entry.name.includes('/semantic-map.')).length")) });
+      for (let completed = 1; completed <= 50; completed += 1) {
+        await cycle(completed % 10 === 0, completed);
+        if (completed % 10 === 0) {
+          await page.command("HeapProfiler.collectGarbage");
+          const measured = await page.command("Runtime.getHeapUsage");
+          const heap = measured.result as CdpRecord | undefined;
+          assert.ok(typeof heap?.usedSize === "number" && typeof heap.totalSize === "number");
+          samples.push({ cycle: completed, usedSize: heap.usedSize, totalSize: heap.totalSize, resourceEntries: Number(await page.evaluate("performance.getEntriesByType('resource').filter(entry=>entry.name.includes('/semantic-map.')).length")) });
+        }
+      }
+      assert.equal(await page.evaluate("document.querySelectorAll('#semantic-map-host iframe').length"), 0);
+      const postWarmupRequests = mapRequests.length - requestsBeforeWarmup;
+      assert.ok(postWarmupRequests >= (warmupCycles + 50) * 3, "each completed open serves all three local assets");
+      const allowedAssets = new Set(["/semantic-map.html", "/semantic-map.js", "/semantic-map.css"]);
+      for (const [index, cycleRequests] of requestsPerCycle.entries()) {
+        assert.ok(cycleRequests.length >= 3, `cycle ${String(index + 1)} served its three assets`);
+        assert.deepEqual(new Set(cycleRequests), allowedAssets, `cycle ${String(index + 1)} requested only the three local viewer routes`);
+      }
+      assert.ok(closedFrameRequests.length === warmupCycles + 50 && closedFrameRequests.every((count, index) => count >= requestsBeforeWarmup + (index + 1) * 3));
+      const duplicateRequests = requestsPerCycle.flatMap((cycleRequests, index) => [...allowedAssets].flatMap((path) => { const count = cycleRequests.filter((request) => request === path).length; return count > 1 ? [{ cycle: index + 1, path, count }] : []; }));
+      let activeSemanticTargets = 0;
+      for (let attempt = 0; attempt < 100; attempt += 1) {
+        const targetInfos = ((await browser.command("Target.getTargets")).result as CdpRecord | undefined)?.targetInfos;
+        activeSemanticTargets = Array.isArray(targetInfos) ? targetInfos.map((target) => target as CdpRecord).filter((target) => typeof target.url === "string" && target.url.includes("/semantic-map.html")).length : 0;
+        if (activeSemanticTargets === 0) break;
+        await delay(20);
+      }
+      assert.equal(activeSemanticTargets, 0, "no separately targeted Semantic Map iframe remains after close");
+      t.diagnostic(`Lifecycle soak: warmup=${String(warmupCycles)}; measuredCycles=50; finalFrames=0; preReadyCloseRequests=${String(requestsAtPreReadyClose - beforePreReadyClose)}; postWarmupRequests=${String(postWarmupRequests)}; duplicate routes during open=${JSON.stringify(duplicateRequests)}; separately measured iframe targets=${String(iframeTargets.size)}, activeTargetsAfterClose=${String(activeSemanticTargets)}; topTargetGC=${JSON.stringify(samples)}; iframeGC=${JSON.stringify(iframeHeapSamples)}; heap budget remains diagnostic pending ratification.`);
+    });
+  } finally {
+    publisher.close();
+    server.closeAllConnections(); server.closeIdleConnections(); server.close(); server.unref();
+    rmSync(root, { recursive: true, force: true });
+  }
 });

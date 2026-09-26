@@ -234,9 +234,22 @@ function parseFrames(client: Client, chunk: Buffer, maxBytes: number): readonly 
 
 function writeJson(response: ServerResponse, status: number, value: unknown): void {
   const body = JSON.stringify(value);
-  response.writeHead(status, { "content-type": "application/json; charset=utf-8", "content-length": Buffer.byteLength(body), "cache-control": "no-store" });
+  response.writeHead(status, { "content-type": "application/json; charset=utf-8", "content-length": Buffer.byteLength(body), "cache-control": "no-store", "x-content-type-options": "nosniff" });
   response.end(body);
 }
+function writeAsset(response: ServerResponse, body: Buffer, contentType: string, headers: Record<string, string> = {}): void {
+  response.writeHead(200, { "content-type": contentType, "content-length": body.byteLength, "cache-control": "no-store", "x-content-type-options": "nosniff", "referrer-policy": "no-referrer", ...headers });
+  response.end(body);
+}
+function parentContentSecurityPolicy(port: number): string {
+  return `default-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; connect-src 'self' ws://127.0.0.1:${String(port)}; frame-src 'self'; child-src 'self'; worker-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'`;
+}
+const SEMANTIC_MAP_CONTENT_SECURITY_POLICY = "default-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src data:; font-src data:; connect-src 'none'; worker-src 'none'; frame-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'";
+const SEMANTIC_MAP_ASSETS = new Map<string, { file: string; contentType: string }>([
+  ["/semantic-map.html", { file: "../assets/semantic-map.html", contentType: "text/html; charset=utf-8" }],
+  ["/semantic-map.js", { file: "../assets/semantic-map.js", contentType: "application/javascript; charset=utf-8" }],
+  ["/semantic-map.css", { file: "../assets/semantic-map.css", contentType: "text/css; charset=utf-8" }]
+]);
 function authorized(request: IncomingMessage, port: number): boolean {
   const origin = request.headers.origin;
   return origin === undefined || origin === `http://127.0.0.1:${String(port)}` || origin === `http://localhost:${String(port)}`;
@@ -462,40 +475,44 @@ export function createTrajectoryServer(port: number, lockPath: string, options: 
     catch { writeJson(response, 400, { error: "Invalid request" }); return; }
     if (!authorized(request, port)) { writeJson(response, 403, { error: "Forbidden" }); return; }
     const path = url.pathname;
+    const requestPath = (request.url ?? "/").split(/[?#]/, 1)[0] ?? "/";
+    if (requestPath !== path) { writeJson(response, 404, { error: "Not found" }); return; }
     // The identity lets an attaching Pi tell its own server from any other one answering on the port.
     if (request.method === "GET" && path === "/health") { writeJson(response, 200, { ok: true, pid: process.pid, fingerprint: serverFingerprint, startedAt }); return; }
     if (request.method === "GET" && (path === "/" || path === "/index.html")) {
       void readFile(new URL("./assets/index.html", import.meta.url)).then((html) => {
-        response.writeHead(200, { "content-type": "text/html; charset=utf-8", "content-length": html.byteLength, "cache-control": "no-store" });
-        response.end(html);
+        writeAsset(response, html, "text/html; charset=utf-8", { "content-security-policy": parentContentSecurityPolicy(port) });
       }).catch(() => { writeJson(response, 500, { error: "Trajectory UI is unavailable" }); });
+      return;
+    }
+    const semanticAsset = request.method === "GET" ? SEMANTIC_MAP_ASSETS.get(path) : undefined;
+    if (semanticAsset) {
+      void readFile(new URL(semanticAsset.file, import.meta.url)).then((asset) => {
+        writeAsset(response, asset, semanticAsset.contentType, path === "/semantic-map.html" ? { "content-security-policy": SEMANTIC_MAP_CONTENT_SECURITY_POLICY } : {});
+      }).catch(() => { writeJson(response, 500, { error: "Semantic Map asset is unavailable" }); });
       return;
     }
     if (request.method === "GET" && path === "/marked.min.js") {
       void readFile(new URL("./assets/marked.min.js", import.meta.url)).then((script) => {
-        response.writeHead(200, { "content-type": "application/javascript; charset=utf-8", "content-length": script.byteLength, "cache-control": "no-store" });
-        response.end(script);
+        writeAsset(response, script, "application/javascript; charset=utf-8");
       }).catch(() => { writeJson(response, 500, { error: "Trajectory markdown renderer is unavailable" }); });
       return;
     }
     if (request.method === "GET" && path === "/morphdom.min.js") {
       void readFile(new URL("./assets/morphdom.min.js", import.meta.url)).then((script) => {
-        response.writeHead(200, { "content-type": "application/javascript; charset=utf-8", "content-length": script.byteLength, "cache-control": "no-store" });
-        response.end(script);
+        writeAsset(response, script, "application/javascript; charset=utf-8");
       }).catch(() => { writeJson(response, 500, { error: "Trajectory DOM diffing library is unavailable" }); });
       return;
     }
     if (request.method === "GET" && path === "/prism.min.js") {
       void readFile(new URL("./assets/prism.min.js", import.meta.url)).then((script) => {
-        response.writeHead(200, { "content-type": "application/javascript; charset=utf-8", "content-length": script.byteLength, "cache-control": "no-store" });
-        response.end(script);
+        writeAsset(response, script, "application/javascript; charset=utf-8");
       }).catch(() => { writeJson(response, 500, { error: "Trajectory syntax highlighting library is unavailable" }); });
       return;
     }
     if (request.method === "GET" && (path === "/favicon.png" || path === "/favicon.ico")) {
       void readFile(new URL("./assets/favicon.png", import.meta.url)).then((icon) => {
-        response.writeHead(200, { "content-type": "image/png", "content-length": icon.byteLength, "cache-control": "no-store" });
-        response.end(icon);
+        writeAsset(response, icon, "image/png");
       }).catch(() => { writeJson(response, 404, { error: "Not found" }); });
       return;
     }

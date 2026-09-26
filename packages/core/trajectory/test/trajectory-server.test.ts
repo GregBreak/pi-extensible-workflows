@@ -144,10 +144,20 @@ void test("Trajectory persists the server fingerprint in its listening lock", as
   const root = await mkdtemp(join(tmpdir(), "trajectory-server-lock-"));
   const port = await availablePort();
   const fingerprint = "server-hash:html-hash";
-  const server = createTrajectoryServer(port, join(root, "trajectory.lock"), { fingerprint });
+  const lockPath = join(root, "trajectory.lock");
+  const server = createTrajectoryServer(port, lockPath, { fingerprint });
   await listen(server, port);
   try {
-    const lock: unknown = JSON.parse(await readFile(join(root, "trajectory.lock"), "utf8"));
+    let lockText: string | undefined;
+    for (let attempt = 0; attempt < 50 && lockText === undefined; attempt += 1) {
+      try {
+        const candidate = await readFile(lockPath, "utf8");
+        if (candidate.trim()) lockText = candidate;
+        else await new Promise((resolve) => setTimeout(resolve, 10));
+      } catch { await new Promise((resolve) => setTimeout(resolve, 10)); }
+    }
+    assert.ok(lockText, "listening lock is persisted");
+    const lock: unknown = JSON.parse(lockText);
     assert.ok(typeof lock === "object" && lock !== null && "startedAt" in lock && typeof lock.startedAt === "number" && lock.startedAt <= Date.now());
     assert.deepEqual({ ...lock, startedAt: undefined }, { pid: process.pid, port, fingerprint, startedAt: undefined });
   } finally {
@@ -170,6 +180,7 @@ void test("Trajectory HTTP and WebSocket boundaries require localhost and origin
     assert.equal((await fetch(`${base}/health`, { headers: { host: `localhost:${String(port)}` } })).status, 200);
     assert.equal((await fetch(`${base}/health?token=ignored`)).status, 200);
     for (const path of ["/", "/index.html", "/marked.min.js"]) assert.equal((await fetch(`${base}${path}`)).status, 200);
+    assert.equal((await fetch(`${base}/semantic-map.html`, { headers: { origin: "http://evil.test" } })).status, 403);
     assert.equal((await fetch(`${base}/health`, { headers: { origin: "http://evil.test" } })).status, 403);
     const valid = await handshake(port, `http://127.0.0.1:${String(port)}`);
     assert.match(valid.response, /^HTTP\/1\.1 101 Switching Protocols/);
@@ -194,6 +205,47 @@ void test("Trajectory HTTP and WebSocket boundaries require localhost and origin
     server.closeIdleConnections();
     server.close();
     server.unref();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+void test("Trajectory serves only versioned Semantic Map artifacts with restrictive policies and exact routes", async () => {
+  const root = await mkdtemp(join(tmpdir(), "trajectory-server-semantic-map-"));
+  const port = await availablePort();
+  const server = createTrajectoryServer(port, join(root, "trajectory.lock"), { fingerprint: "server:semantic-map-stamp" });
+  await listen(server, port);
+  try {
+    const base = `http://127.0.0.1:${String(port)}`;
+    const page = await fetch(`${base}/`);
+    assert.equal(page.status, 200);
+    assert.equal(page.headers.get("cache-control"), "no-store");
+    assert.equal(page.headers.get("x-content-type-options"), "nosniff");
+    assert.match(page.headers.get("content-security-policy") ?? "", /frame-src 'self'/);
+    assert.match(page.headers.get("content-security-policy") ?? "", new RegExp(`ws://127\\.0\\.0\\.1:${String(port)}`));
+    const paths = [
+      ["/semantic-map.html?build=ignored", "text/html; charset=utf-8", "semantic-map.html"],
+      ["/semantic-map.js", "application/javascript; charset=utf-8", "semantic-map.js"],
+      ["/semantic-map.css", "text/css; charset=utf-8", "semantic-map.css"]
+    ] as const;
+    for (const [route, mime, asset] of paths) {
+      const response = await fetch(`${base}${route}`);
+      assert.equal(response.status, 200, route);
+      assert.equal(response.headers.get("content-type"), mime);
+      assert.equal(response.headers.get("cache-control"), "no-store");
+      assert.equal(response.headers.get("x-content-type-options"), "nosniff");
+      assert.deepEqual(Buffer.from(await response.arrayBuffer()), await readFile(new URL(`../assets/${asset}`, import.meta.url)));
+      if (asset === "semantic-map.html") {
+        const csp = response.headers.get("content-security-policy") ?? "";
+        assert.match(csp, /default-src 'none'/);
+        assert.match(csp, /connect-src 'none'/);
+        assert.match(csp, /object-src 'none'/);
+        assert.match(csp, /script-src 'self' 'unsafe-inline'/);
+        assert.match(csp, /style-src 'self' 'unsafe-inline'/);
+      } else assert.equal(response.headers.has("content-security-policy"), false);
+    }
+    for (const path of ["/semantic-map.json", "/semantic-map/semantic-map.js", "/%252e%252e/semantic-map.js"]) assert.equal((await fetch(`${base}${path}`)).status, 404, path);
+  } finally {
+    server.closeAllConnections(); server.closeIdleConnections(); server.close(); server.unref();
     await rm(root, { recursive: true, force: true });
   }
 });
