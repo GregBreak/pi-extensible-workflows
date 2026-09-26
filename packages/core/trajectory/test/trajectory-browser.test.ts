@@ -39,16 +39,26 @@ function findBrowser(): string | undefined {
 class Devtools {
   private nextId = 1;
   private readonly pending = new Map<number, { resolve: (message: CdpMessage) => void; reject: (error: Error) => void }>();
+  private readonly eventListeners = new Map<string, Set<(params: CdpRecord) => void>>();
   constructor(private readonly socket: WebSocket) {
     socket.addEventListener("message", (event) => {
       let message: CdpMessage;
       try { message = JSON.parse(String(event.data)) as CdpMessage; } catch { return; }
+      if (typeof message.method === "string") {
+        const params = message.params && typeof message.params === "object" ? message.params as CdpRecord : {};
+        for (const listener of this.eventListeners.get(message.method) || []) listener(params);
+      }
       if (typeof message.id !== "number") return;
       const request = this.pending.get(message.id);
       if (!request) return;
       this.pending.delete(message.id);
       request.resolve(message);
     });
+  }
+  on(method: string, listener: (params: CdpRecord) => void): void {
+    const listeners = this.eventListeners.get(method) || new Set<(params: CdpRecord) => void>();
+    listeners.add(listener);
+    this.eventListeners.set(method, listeners);
   }
   command(method: string, params: CdpRecord = {}): Promise<CdpMessage> {
     const id = this.nextId++;
@@ -313,4 +323,145 @@ void test("Trajectory keeps a subagent transcript when a refresh races a newer r
     await new Promise<void>((resolve) => { server.close(() => { resolve(); }); });
     rmSync(root, { recursive: true, force: true });
   }
+});
+
+async function serveSemanticMapFeasibilityFixture(template: string): Promise<{ url: string; requests: string[]; close: () => Promise<void> }> {
+  const requests: string[] = [];
+  const childProbe = `<script>
+    (function () {
+      const nonce = "semantic-map-e0-fixture";
+      let accepted = false;
+      window.addEventListener("message", function (event) {
+        if (accepted || event.source !== parent || event.data?.channel !== "semantic-map-e0-bootstrap" || event.data?.nonce !== nonce || event.ports.length !== 1) return;
+        accepted = true;
+        const port = event.ports[0];
+        port.onmessage = function (message) {
+          if (message.data?.type === "mutate") {
+            const finder = Archify.finder;
+            const svg = document.querySelector(".diagram-container svg");
+            const initialCount = finder.count;
+            const cameraBefore = Archify.view.state();
+            const node = document.createElementNS("http://www.w3.org/2000/svg", "g");
+            node.setAttribute("data-node-id", "e0-live-node");
+            node.setAttribute("data-node-label", "E0 Live Node");
+            node.setAttribute("data-animate", "node");
+            const label = document.createElementNS("http://www.w3.org/2000/svg", "text");
+            label.textContent = "E0 Live Node";
+            node.appendChild(label);
+            svg.appendChild(node);
+            const inserted = Boolean(svg.querySelector('[data-node-id="e0-live-node"]'));
+            node.setAttribute("data-node-status", "running");
+            const statusUpdated = node.getAttribute("data-node-status") === "running";
+            node.remove();
+            const removed = !svg.querySelector('[data-node-id="e0-live-node"]');
+            finder.open();
+            const input = document.getElementById("node-finder-input");
+            input.value = "e0-live-node";
+            input.dispatchEvent(new Event("input", { bubbles: true }));
+            const searchResults = document.querySelectorAll("#node-finder-results .node-finder-result").length;
+            const selectedNewNode = finder.select("e0-live-node");
+            port.postMessage({ type: "mutation-result", origin: self.origin, sandboxOrigin: location.origin, initialCount, countAfterMutation: finder.count, inserted, statusUpdated, removed, searchResults, selectedNewNode, cameraBefore, cameraAfter: Archify.view.state(), frameWidth: document.querySelector(".diagram-container").clientWidth });
+          } else if (message.data?.type === "measure") {
+            port.postMessage({ type: "measure-result", camera: Archify.view.state(), frameWidth: document.querySelector(".diagram-container").clientWidth });
+          }
+        };
+        port.start();
+        port.postMessage({ type: "ready", origin: self.origin, sandboxOrigin: location.origin, finderCount: Archify.finder.count, initialNodeCount: document.querySelectorAll(".diagram-container svg [data-node-id]").length });
+      }, { once: true });
+    })();
+  </script>`;
+  const childHtml = template.replace("</body>", `${childProbe}</body>`);
+  assert.notEqual(childHtml, template, "fixture shim must be appended without changing the pinned input");
+  const parentHtml = `<!doctype html><meta charset="utf-8"><div id="map-host"></div><script>
+    window.__mapMessages = [];
+    window.mountSemanticMap = function () {
+      const frame = document.createElement("iframe");
+      frame.setAttribute("sandbox", "allow-scripts");
+      frame.setAttribute("referrerpolicy", "no-referrer");
+      frame.src = "/archify.html";
+      frame.addEventListener("load", function () {
+        const channel = new MessageChannel();
+        window.__semanticMapPort = channel.port1;
+        channel.port1.onmessage = function (event) { window.__mapMessages.push(event.data); };
+        channel.port1.start();
+        frame.contentWindow.postMessage({ channel: "semantic-map-e0-bootstrap", nonce: "semantic-map-e0-fixture" }, "*", [channel.port2]);
+      }, { once: true });
+      window.__semanticMapFrame = frame;
+      document.getElementById("map-host").appendChild(frame);
+    };
+    window.unmountSemanticMap = function () {
+      window.__semanticMapPort?.close();
+      window.__semanticMapPort = null;
+      window.__semanticMapFrame?.remove();
+      window.__semanticMapFrame = null;
+    };
+    window.mountSemanticMap();
+  </script>`;
+  const server = createServer((request, response) => {
+    const path = new URL(request.url || "/", "http://127.0.0.1").pathname;
+    requests.push(path);
+    if (path === "/") {
+      response.writeHead(200, { "content-type": "text/html; charset=utf-8", "content-security-policy": "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; frame-src 'self'; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'" });
+      response.end(parentHtml);
+      return;
+    }
+    if (path === "/archify.html") {
+      response.writeHead(200, { "content-type": "text/html; charset=utf-8", "content-security-policy": "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:; font-src data:; connect-src 'none'; frame-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'self'" });
+      response.end(childHtml);
+      return;
+    }
+    response.writeHead(404);
+    response.end();
+  });
+  await new Promise<void>((resolve, reject) => { server.once("error", reject); server.listen(0, "127.0.0.1", resolve); });
+  const address = server.address();
+  assert.ok(address && typeof address !== "string");
+  return { url: `http://127.0.0.1:${String(address.port)}`, requests, close: () => new Promise<void>((resolve, reject) => { server.close((error) => { if (error) reject(error); else resolve(); }); }) };
+}
+
+void test("Pinned Archify E0 sandbox spike demonstrates static Finder index under live SVG mutation", { skip: !browserPath, timeout: 120_000 }, async () => {
+  const fixture = readFileSync(new URL("../../../trajectory/test/fixtures/semantic-map-feasibility/archify-template.html", import.meta.url), "utf8").replace(/\r\n/g, "\n");
+  assert.equal(Buffer.byteLength(fixture), 774_866);
+  const { createHash } = await import("node:crypto");
+  assert.equal(createHash("sha256").update(fixture).digest("hex"), "505f1c6baa9c2454475c048aa75df8abd867e680e7b3b794b9218a95a56fc370");
+  const server = await serveSemanticMapFeasibilityFixture(fixture);
+  try {
+    await withChrome(`${server.url}/`, async (page) => {
+      await waitFor(page, `location.origin === ${JSON.stringify(server.url)}`);
+      await page.command("Network.enable");
+      const browserRequests: string[] = [];
+      page.on("Network.requestWillBeSent", (params) => { if (typeof params.request === "object" && params.request !== null && typeof (params.request as CdpRecord).url === "string") browserRequests.push(String((params.request as CdpRecord).url)); });
+      const parentDiagnostics = await page.evaluate("JSON.stringify({href: location.href, state: document.readyState, mapMessages: typeof window.__mapMessages, body: document.body.textContent})");
+      assert.equal(await page.evaluate("Array.isArray(window.__mapMessages)"), true, `test page setup failed: ${String(parentDiagnostics)}`);
+      await waitFor(page, "window.__mapMessages.some((message) => message.type === 'ready')");
+      const ready = await page.evaluate("window.__mapMessages.find((message) => message.type === 'ready')");
+      assert.equal((ready as CdpRecord).origin, "null", "the viewer must run in an opaque-origin allow-scripts sandbox");
+      assert.equal(await page.evaluate("document.querySelector('iframe').getAttribute('sandbox')"), "allow-scripts");
+      await page.evaluate("window.__semanticMapPort.postMessage({ type: 'mutate' })");
+      await waitFor(page, "window.__mapMessages?.some((message) => message.type === 'mutation-result')");
+      const result = await page.evaluate("window.__mapMessages.find((message) => message.type === 'mutation-result')") as CdpRecord;
+      assert.equal(Number((ready as CdpRecord).finderCount), 0, "the pinned template ships an empty static SVG shell, not live graph data");
+      assert.equal(Number((ready as CdpRecord).initialNodeCount), 0);
+      assert.equal(result.inserted, true);
+      assert.equal(result.statusUpdated, true);
+      assert.equal(result.removed, true);
+      assert.equal(result.countAfterMutation, result.initialCount, "Finder retains the initial index size after the live SVG changed");
+      assert.equal(result.searchResults, 0, "a newly inserted SVG node is absent from Finder search");
+      assert.equal(result.selectedNewNode, false, "the upstream public selection API rejects the newly inserted node");
+      assert.deepEqual(result.cameraAfter, result.cameraBefore, "status/insert/remove does not change initial camera state");
+      await page.command("Emulation.setDeviceMetricsOverride", { width: 1280, height: 900, deviceScaleFactor: 1, mobile: false });
+      await page.evaluate("window.__semanticMapPort.postMessage({ type: 'measure' })");
+      await waitFor(page, "window.__mapMessages?.some((message) => message.type === 'measure-result')");
+      const measured = await page.evaluate("window.__mapMessages.find((message) => message.type === 'measure-result')") as CdpRecord;
+      assert.ok(Number(measured.frameWidth) > 0, "opaque sandbox renders its local SVG after resize");
+      assert.equal((measured.camera as CdpRecord).scale, (result.cameraBefore as CdpRecord).scale);
+      assert.deepEqual(server.requests.filter((path) => path.startsWith("/")), ["/", "/archify.html"], "the self-contained viewer makes no additional local requests or socket connections");
+      assert.equal(browserRequests.some((url) => /^wss?:/i.test(url)), false, "the isolated viewer opens no WebSocket");
+      for (let cycle = 0; cycle < 3; cycle += 1) {
+        await page.evaluate("window.__mapMessages = []; window.unmountSemanticMap(); window.mountSemanticMap()");
+        await waitFor(page, "window.__mapMessages?.some((message) => message.type === 'ready')");
+        assert.equal(await page.evaluate("document.querySelectorAll('#map-host iframe').length"), 1, "dispose removes the previous browsing context before reopen");
+      }
+    });
+  } finally { await server.close(); }
 });
