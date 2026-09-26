@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { execFileSync, spawn } from "node:child_process";
 import { createServer } from "node:http";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
@@ -505,3 +506,210 @@ void test(`Pinned Archify E0 sandbox spike ${refreshFinder ? "refreshes Finder w
   } finally { await server.close(); }
 });
 }
+
+
+function applySemanticProfilePatch(template: string): string {
+  assert.equal(Buffer.byteLength(template), 774_866);
+  assert.equal(createHash("sha256").update(template).digest("hex"), "505f1c6baa9c2454475c048aa75df8abd867e680e7b3b794b9218a95a56fc370");
+  const recipe = readFileSync(new URL("../../../trajectory/test/fixtures/semantic-map-feasibility/live-profile.patch.json", import.meta.url), "utf8").replace(/\r\n/g, "\n");
+  const patches: unknown = JSON.parse(recipe);
+  assert.ok(Array.isArray(patches));
+  let output = template;
+  for (const patch of patches as { find: string; replacement: string }[]) {
+    assert.equal(typeof patch.find, "string");
+    assert.equal(typeof patch.replacement, "string");
+    assert.equal(output.split(patch.find).length, 2, "pinned live-profile patch anchor must match exactly once");
+    output = output.replace(patch.find, () => patch.replacement);
+  }
+  return output;
+}
+
+async function serveSemanticMapLiveProfile(html: string, js: string, css: string): Promise<{ url: string; requests: string[]; close: () => Promise<void> }> {
+  const requests: string[] = [];
+  const parentHtml = `<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width"><div id="map-host" style="width:100vw;height:100vh"></div><script>
+    window.__mapMessages = [];
+    window.mountSemanticMap = function () {
+      const frame = document.createElement("iframe");
+      frame.setAttribute("sandbox", "allow-scripts");
+      frame.setAttribute("referrerpolicy", "no-referrer");
+      frame.style.cssText = "width:100%;height:100%;border:0";
+      frame.src = "/archify.html?embed=1";
+      frame.addEventListener("load", function () {
+        const channel = new MessageChannel();
+        window.__semanticMapPort = channel.port1;
+        channel.port1.onmessage = function (event) { window.__mapMessages.push(event.data); };
+        channel.port1.start();
+        frame.contentWindow.postMessage({ channel: "semantic-map-e0-profile", nonce: "semantic-map-e0-profile-fixture" }, "*", [channel.port2]);
+      }, { once: true });
+      window.__semanticMapFrame = frame;
+      document.getElementById("map-host").appendChild(frame);
+    };
+    window.unmountSemanticMap = function () {
+      window.__semanticMapPort?.close();
+      window.__semanticMapPort = null;
+      window.__semanticMapFrame?.remove();
+      window.__semanticMapFrame = null;
+    };
+  </script>`;
+  const csp = "default-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src data:; font-src data:; connect-src 'none'; worker-src 'none'; frame-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'self'";
+  const server = createServer((request, response) => {
+    const path = new URL(request.url || "/", "http://127.0.0.1").pathname;
+    requests.push(path);
+    if (path === "/") {
+      response.writeHead(200, { "content-type": "text/html; charset=utf-8", "content-security-policy": "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; frame-src 'self'; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'" });
+      response.end(parentHtml);
+    } else if (path === "/archify.html") {
+      response.writeHead(200, { "content-type": "text/html; charset=utf-8", "content-security-policy": csp, "cache-control": "no-store", "x-content-type-options": "nosniff" });
+      response.end(html);
+    } else if (path === "/live-profile.js") {
+      response.writeHead(200, { "content-type": "text/javascript; charset=utf-8", "x-content-type-options": "nosniff" }); response.end(js);
+    } else if (path === "/live-profile.css") {
+      response.writeHead(200, { "content-type": "text/css; charset=utf-8", "x-content-type-options": "nosniff" }); response.end(css);
+    } else if (path === "/favicon.ico") { response.writeHead(204); response.end(); }
+    else { response.writeHead(404); response.end(); }
+  });
+  await new Promise<void>((resolve, reject) => { server.once("error", reject); server.listen(0, "127.0.0.1", resolve); });
+  const address = server.address();
+  assert.ok(address && typeof address !== "string");
+  return { url: `http://127.0.0.1:${String(address.port)}`, requests, close: () => new Promise<void>((resolve, reject) => { server.close((error) => { if (error) reject(error); else resolve(); }) } ) };
+}
+
+void test("Pinned Archify E0 sandbox spike bounded profile proves external assets, live geometry, relations, camera, and cleanup", { skip: !browserPath, timeout: 120_000 }, async () => {
+  const base = new URL("../../../trajectory/test/fixtures/semantic-map-feasibility/", import.meta.url);
+  const fixture = readFileSync(new URL("archify-template.html", base), "utf8").replace(/\r\n/g, "\n");
+  const html = applySemanticProfilePatch(fixture);
+  const js = readFileSync(new URL("live-profile.js", base), "utf8").replace(/\r\n/g, "\n");
+  const css = readFileSync(new URL("live-profile.css", base), "utf8").replace(/\r\n/g, "\n");
+  const recipe = readFileSync(new URL("live-profile.patch.json", base), "utf8").replace(/\r\n/g, "\n");
+  const patchBytes = Buffer.byteLength(recipe);
+  const htmlBytes = Buffer.byteLength(html), jsBytes = Buffer.byteLength(js), cssBytes = Buffer.byteLength(css);
+  assert.equal(htmlBytes, 775_134);
+  assert.equal(createHash("sha256").update(html).digest("hex"), "f18ad0819a3e8413c5d9e0ad6f4bf73680f37ce374c3eaa82a8441803baf768f");
+  assert.equal(jsBytes, 11_594);
+  assert.equal(createHash("sha256").update(js).digest("hex"), "2065e1d6d647e030189ee8d639a4a84228c06f815c2f6b192cc3ef7cfe195983");
+  assert.equal(cssBytes, 606);
+  assert.equal(createHash("sha256").update(css).digest("hex"), "840e950479da0a335add60341ee5a3e4b9b51069135e5e388b3c5e0253d34e05");
+  assert.equal(patchBytes, 1_000);
+  assert.equal(createHash("sha256").update(recipe).digest("hex"), "cc830d7796d76fde7019d4553d244f8febd43cecb0219afad3ceca23137b6f2c");
+  assert.equal(htmlBytes + jsBytes + cssBytes, 787_334);
+  const server = await serveSemanticMapLiveProfile(html, js, css);
+  try {
+    await withChrome(`${server.url}/`, async (page) => {
+      await waitFor(page, `location.origin === ${JSON.stringify(server.url)}`);
+      await waitFor(page, "document.readyState === 'complete'");
+      await page.command("Network.enable");
+      const browserRequests: string[] = [];
+      const viewerResponses: CdpRecord[] = [];
+      page.on("Network.requestWillBeSent", (params) => {
+        if (typeof params.request === "object" && params.request !== null && typeof (params.request as CdpRecord).url === "string") browserRequests.push(String((params.request as CdpRecord).url));
+      });
+      page.on("Network.responseReceived", (params) => {
+        if (typeof params.response === "object" && params.response !== null && String((params.response as CdpRecord).url).includes("/archify.html")) viewerResponses.push(params.response as CdpRecord);
+      });
+      assert.equal(await page.evaluate("typeof window.mountSemanticMap"), "function", "parent bootstrap must be available before iframe navigation");
+      await page.evaluate("window.mountSemanticMap()");
+      await waitFor(page, "window.__mapMessages.some((message) => message.type === 'ready') && window.__mapMessages.some((message) => message.type === 'initial')");
+      const ready = await page.evaluate("window.__mapMessages.find((message) => message.type === 'ready')") as CdpRecord;
+      assert.equal(ready.origin, "null");
+      assert.equal(ready.externalScript, true);
+      assert.equal(ready.externalStyle, true);
+      assert.deepEqual(ready.cspViolations, [], "no blocked resource or external request is attempted during viewer startup");
+      assert.equal(await page.evaluate("document.querySelector('iframe').getAttribute('sandbox')"), "allow-scripts");
+      await page.evaluate("window.__semanticMapPort.postMessage({action:'metrics'})");
+      await waitFor(page, "window.__mapMessages.some((message) => message.type === 'metrics')");
+      const initial = await page.evaluate("window.__mapMessages.find((message) => message.type === 'metrics')") as CdpRecord;
+      assert.equal(initial.nodeCount, 6, "first rendered graph is nonempty");
+      assert.equal(initial.edgeCount, 6);
+      assert.equal(initial.nodeGeometry, true, "real SVG shape/text geometry is present");
+      assert.equal(initial.edgeGeometry, true, "every explicit relation has finite nonzero SVG path geometry");
+      assert.deepEqual(initial.relationTypes, ["dependency", "invokes", "produces"]);
+      assert.equal(initial.routeDisabledInEmbed, true, "unsupported Route Probe remains disabled by Archify's embed boundary");
+      const initialSlots = initial.slots as Record<string, unknown>;
+      const initialViewBox = initial.viewBox;
+
+      await page.evaluate("window.__semanticMapPort.postMessage({action:'pan-zoom'})");
+      await waitFor(page, "window.__mapMessages.some((message) => message.type === 'pan-zoom')");
+      const panZoom = await page.evaluate("window.__mapMessages.find((message) => message.type === 'pan-zoom')") as CdpRecord;
+      const zoomCamera = panZoom.afterZoom as CdpRecord;
+      const pannedCamera = panZoom.afterPan as CdpRecord;
+      assert.ok(Number(zoomCamera.scale) > 1, "Archify public zoom API changes the real camera");
+      assert.ok(Number(pannedCamera.scale) > 1 && (Number(pannedCamera.x) < 0 || Number(pannedCamera.y) < 0), "Archify centerAt pans and zooms the live viewport");
+      await page.command("Emulation.setDeviceMetricsOverride", { width: 1280, height: 900, deviceScaleFactor: 1, mobile: false });
+      await delay(150);
+      await page.evaluate("window.__semanticMapPort.postMessage({action:'metrics'})");
+      await waitFor(page, "window.__mapMessages.filter((message) => message.type === 'metrics').length >= 2");
+      const resized = await page.evaluate("window.__mapMessages.filter((message) => message.type === 'metrics').at(-1)") as CdpRecord;
+      assert.equal(resized.viewBox, initialViewBox);
+      assert.deepEqual(resized.slots, initialSlots, "resize preserves stable semantic slots");
+      assert.equal((resized.camera as CdpRecord).scale, pannedCamera.scale);
+      assert.ok(Number.isFinite(Number((resized.camera as CdpRecord).x)) && Number.isFinite(Number((resized.camera as CdpRecord).y)));
+
+      await page.evaluate("window.__semanticMapPort.postMessage({action:'status'})");
+      await waitFor(page, "window.__mapMessages.some((message) => message.type === 'status')");
+      const status = await page.evaluate("window.__mapMessages.find((message) => message.type === 'status')") as CdpRecord;
+      assert.equal(status.statusText, "completed");
+      assert.notEqual(status.oldStroke, status.newStroke, "status is visibly represented on the node shape");
+      assert.deepEqual((status.before as CdpRecord).camera, (status.after as CdpRecord).camera, "status-only update leaves the camera unchanged");
+      assert.deepEqual((status.before as CdpRecord).slots, (status.after as CdpRecord).slots, "status-only update does not re-layout nodes");
+
+      await page.evaluate("window.__semanticMapPort.postMessage({action:'insert'})");
+      await waitFor(page, "window.__mapMessages.some((message) => message.type === 'insert')");
+      const inserted = await page.evaluate("window.__mapMessages.find((message) => message.type === 'insert')") as CdpRecord;
+      assert.deepEqual(inserted.previousView, inserted.currentView, "structural update preserves camera state");
+      const insertedSlots = (inserted.metrics as CdpRecord).slots as Record<string, unknown>;
+      for (const id of Object.keys(initialSlots)) assert.deepEqual(insertedSlots[id], initialSlots[id], `existing node slot stays fixed: ${id}`);
+      await page.evaluate("window.__semanticMapPort.postMessage({action:'select'})");
+      await waitFor(page, "window.__mapMessages.some((message) => message.type === 'select')");
+      const selected = await page.evaluate("window.__mapMessages.find((message) => message.type === 'select')") as CdpRecord;
+      assert.equal(selected.count, 1, "Finder finds the inserted, still-attached node");
+      assert.equal(selected.selected, true);
+      assert.equal(selected.focus, "new-task", "Archify.focus.active() contains the selected stable ID");
+      assert.ok(Number(selected.focusMatches) >= 2, "real relation neighbors are highlighted");
+
+      await page.evaluate("window.__semanticMapPort.postMessage({action:'remove-selected'})");
+      await waitFor(page, "window.__mapMessages.some((message) => message.type === 'remove-selected')");
+      const removed = await page.evaluate("window.__mapMessages.find((message) => message.type === 'remove-selected')") as CdpRecord;
+      assert.equal(removed.active, null, "selected-node removal explicitly clears retained focus");
+      assert.equal(removed.focusMarkers, 0);
+      assert.equal(removed.chipHidden, true);
+      assert.equal(removed.finderCount, 6);
+      assert.equal(removed.searchCount, 0, "detached node no longer appears in Finder search");
+      assert.equal(removed.hash, "", "removed stable ID is removed from the focus route");
+      assert.equal(removed.route, null);
+      assert.deepEqual(removed.previousView, removed.currentView, "focus invalidation preserves the camera");
+      assert.equal((removed.after as CdpRecord).nodeCount, 6);
+
+      const allowed = new Set(["/", "/archify.html", "/live-profile.js", "/live-profile.css", "/favicon.ico"]);
+      for (const request of browserRequests) {
+        const url = new URL(request);
+        assert.equal(url.origin, server.url, `remote/external request is prohibited: ${request}`);
+        assert.ok(allowed.has(url.pathname), `unapproved local request: ${request}`);
+      }
+      assert.ok(browserRequests.some((request) => request.endsWith("/archify.html?embed=1")));
+      assert.ok(viewerResponses.length > 0);
+      const viewerHeaders = viewerResponses[0]?.headers as CdpRecord | undefined;
+      assert.ok(viewerHeaders);
+      const csp = String(viewerHeaders["content-security-policy"]);
+      assert.match(csp, /default-src 'none'/);
+      assert.match(csp, /connect-src 'none'/);
+      assert.match(csp, /object-src 'none'/);
+      assert.match(csp, /script-src 'self' 'unsafe-inline'/, "unsafe-inline is retained only for pinned template inline code");
+      assert.deepEqual(server.requests.filter((path) => path !== "/favicon.ico").slice(0, 4), ["/", "/archify.html", "/live-profile.css", "/live-profile.js"]);
+      await page.evaluate("window.__stalePort = window.__semanticMapPort; window.__semanticMapPort.postMessage({action:'metrics'}); window.unmountSemanticMap(); window.__mapMessages = []");
+      await delay(100);
+      assert.equal(await page.evaluate("document.querySelectorAll('#map-host iframe').length"), 0);
+      assert.equal(await page.evaluate("window.__mapMessages.length"), 0, "pending work cannot reply through a disposed browsing context");
+      for (let cycle = 0; cycle < 3; cycle += 1) {
+        await page.evaluate("window.mountSemanticMap()");
+        await waitFor(page, "window.__mapMessages.some((message) => message.type === 'ready') && window.__mapMessages.some((message) => message.type === 'initial')");
+        await page.evaluate("window.__semanticMapPort.postMessage({action:'metrics'})");
+        await waitFor(page, "window.__mapMessages.some((message) => message.type === 'metrics')");
+        const reopened = await page.evaluate("window.__mapMessages.find((message) => message.type === 'metrics')") as CdpRecord;
+        assert.equal(reopened.nodeCount, 6, "reopen renders current profile data in a fresh context");
+        assert.equal(await page.evaluate("document.querySelectorAll('#map-host iframe').length"), 1);
+        await page.evaluate("window.unmountSemanticMap(); window.__mapMessages = []");
+        assert.equal(await page.evaluate("document.querySelectorAll('#map-host iframe').length"), 0);
+      }
+    });
+  } finally { await server.close(); }
+});
