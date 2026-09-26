@@ -32,6 +32,7 @@ test("the repository keeps the public package in the core workspace", () => {
     "./persistence": "./dist/src/persistence.js",
     "./types": "./dist/src/types.js",
     "./utils": "./dist/src/utils.js",
+    "./process": "./dist/src/process-launcher.js",
     "./budget": "./dist/src/budget.js",
     "./validation": "./dist/src/validation.js",
     "./roles": "./dist/src/roles.js",
@@ -46,8 +47,11 @@ test("the repository keeps the public package in the core workspace", () => {
   assert.ok(core.files.includes("!dist/**/*.test.*"));
   for (const path of ["dist/trajectory/src/assets/semantic-map.html", "dist/trajectory/src/assets/semantic-map.js", "dist/trajectory/src/assets/semantic-map.css", "trajectory/src/assets/semantic-map.html", "trajectory/src/assets/semantic-map.js", "trajectory/src/assets/semantic-map.css", "trajectory/src/semantic-map.css"]) assert.ok(core.files.includes(`!${path}`));
   assert.ok(core.files.includes("trajectory/vendor/archify/LICENSE"));
-  assert.match(core.scripts.build, /build-semantic-map\.mjs/);
-  assert.match(core.scripts.build, /cp -R trajectory\/src\/assets dist\/trajectory\/assets/);
+  assert.match(core.scripts.build, /workspace-build\.mjs core/);
+  assert.match(core.scripts["test:run"], /run-workspace-tests\.mjs/);
+  assert.match(core.scripts["test:subagents"], /run-workspace-tests\.mjs/);
+  assert.match(cli.scripts.build, /workspace-build\.mjs cli/);
+  assert.match(cli.scripts["test:run"], /run-workspace-tests\.mjs/);
   assert.ok(core.files.includes("trajectory/index.ts"));
   assert.ok(core.files.includes("trajectory/src"));
   assert.ok(core.files.includes("subagents/index.ts"));

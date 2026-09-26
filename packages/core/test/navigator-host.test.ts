@@ -720,19 +720,19 @@ void test("navigator returns to the picker after deleting a run", async () => {
   assert.equal(existsSync(keepStore.directory), true);
 });
 void test("navigator opens the workflow script in the configured external editor", async () => {
-  const home = mkdtempSync(join(tmpdir(), "pi-extensible-workflows-external-editor-"));
+  const home = mkdtempSync(join(tmpdir(), "pi extensible workflows external editor-"));
   const cwd = join(home, "project");
   const store = new RunStore(cwd, "session", "run", home);
   const script = ["// SCRIPT_START", ...Array.from({ length: 20 }, (_, index) => `const line${String(index)} = ${String(index)};`), "// SCRIPT_END"].join("\n");
   const snapshot = createLaunchSnapshot({ script, args: null, metadata: { name: "viewer", description: "viewer" }, settings: DEFAULT_SETTINGS, models: ["openai/gpt"], tools: [], agentTypes: [], schemas: [] });
   await store.create({ id: "run", workflowName: "viewer", cwd, sessionId: "session", state: "running", phase: "view", agents: [], agentSessions: [] }, snapshot);
-  const editorPath = join(home, "fake-editor.sh");
+  const editorPath = join(home, "fake editor.mjs");
   const editedPath = join(home, "edited-content");
   const openedPath = join(home, "opened-path");
-  writeFileSync(editorPath, "#!/bin/sh\nprintf '%s' \"$3\" > \"$2\"\ncat \"$3\" > \"$1\"\n", { encoding: "utf8", mode: 0o755 });
+  writeFileSync(editorPath, "import { copyFileSync, writeFileSync } from 'node:fs'; const [edited, opened, artifact] = process.argv.slice(2); writeFileSync(opened, artifact); copyFileSync(artifact, edited);\n");
   const previousVisual = process.env.VISUAL;
   const previousEditor = process.env.EDITOR;
-  process.env.VISUAL = `${editorPath} ${editedPath} ${openedPath}`;
+  process.env.VISUAL = `"${process.execPath}" "${editorPath}" "${editedPath}" "${openedPath}"`;
   process.env.EDITOR = process.env.VISUAL;
   let stops = 0;
   let pickerCalls = 0;
@@ -777,13 +777,13 @@ void test("navigator opens the workflow script in the configured external editor
   }
 });
 void test("external artifact failures restore the TUI and remove temporary copies", async () => {
-  const home = mkdtempSync(join(tmpdir(), "pi-extensible-workflows-external-editor-failure-"));
-  const editorPath = join(home, "failing-editor.sh");
+  const home = mkdtempSync(join(tmpdir(), "pi extensible workflows external editor failure-"));
+  const editorPath = join(home, "failing editor.mjs");
   const openedPath = join(home, "opened-path");
-  writeFileSync(editorPath, "#!/bin/sh\nprintf '%s' \"$2\" > \"$1\"\nexit 7\n", { encoding: "utf8", mode: 0o755 });
+  writeFileSync(editorPath, "import { writeFileSync } from 'node:fs'; const [opened, artifact] = process.argv.slice(2); writeFileSync(opened, artifact); process.exitCode = 7;\n");
   const events: string[] = [];
   const tui = { stop() { events.push("stop"); }, start() { events.push("start"); }, requestRender() { events.push("render"); } };
-  const exitCode = await openWorkflowArtifact(tui, `${editorPath} ${openedPath}`, { extension: ".md", content: "read-only" });
+  const exitCode = await openWorkflowArtifact(tui, `"${process.execPath}" "${editorPath}" "${openedPath}"`, { extension: ".md", content: "read-only" });
   assert.equal(exitCode, 7);
   const opened = readFileSync(openedPath, "utf8");
   assert.equal(existsSync(opened), false);
@@ -792,20 +792,20 @@ void test("external artifact failures restore the TUI and remove temporary copie
   assert.deepEqual(events, ["stop", "start", "render", "stop", "start", "render"]);
 });
 void test("navigator opens a persisted top-level agent prompt and result in the external editor", async () => {
-  const home = mkdtempSync(join(tmpdir(), "pi-extensible-workflows-agent-result-editor-"));
+  const home = mkdtempSync(join(tmpdir(), "pi extensible workflows agent result editor-"));
   const cwd = join(home, "project");
   const store = new RunStore(cwd, "session", "run", home);
   const resultPath = "agent/reviewer/callsite%3Areviewer/occurrence%3A1";
   const snapshot = createLaunchSnapshot({ script: "return true", args: null, metadata: { name: "agent-result" }, settings: DEFAULT_SETTINGS, models: ["openai/gpt"], tools: [], agentTypes: [], schemas: [] });
   await store.create({ id: "run", workflowName: "agent-result", cwd, sessionId: "session", state: "completed", phase: "review", agents: [{ id: "agent", name: "reviewer", path: "agent", state: "completed", prompt: "PROMPT_START\nInspect the target\nPROMPT_END", systemPrompt: "SYSTEM_PROMPT_START\nFollow the workflow\nSYSTEM_PROMPT_END", resultPath, structuralPath: ["reviewer"], model: { provider: "openai", model: "gpt" }, tools: [], attempts: 1 }], agentSessions: [] }, snapshot);
   await store.complete(resultPath, { answer: 42 });
-  const editorPath = join(home, "fake-editor.sh");
+  const editorPath = join(home, "fake editor.mjs");
   const editedPath = join(home, "edited-content");
   const openedPath = join(home, "opened-path");
-  writeFileSync(editorPath, "#!/bin/sh\nprintf '%s' \"$3\" > \"$2\"\ncat \"$3\" > \"$1\"\n", { encoding: "utf8", mode: 0o755 });
+  writeFileSync(editorPath, "import { copyFileSync, writeFileSync } from 'node:fs'; const [edited, opened, artifact] = process.argv.slice(2); writeFileSync(opened, artifact); copyFileSync(artifact, edited);\n");
   const previousVisual = process.env.VISUAL;
   const previousEditor = process.env.EDITOR;
-  process.env.VISUAL = `${editorPath} ${editedPath} ${openedPath}`;
+  process.env.VISUAL = `"${process.execPath}" "${editorPath}" "${editedPath}" "${openedPath}"`;
   process.env.EDITOR = process.env.VISUAL;
   let stops = 0;
   let starts = 0;

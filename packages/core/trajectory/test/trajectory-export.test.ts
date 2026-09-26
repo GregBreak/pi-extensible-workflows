@@ -47,8 +47,8 @@ void test("exportTrajectoryRunHtml renders a self-contained static run report", 
     assert.ok(html.includes("$' $` $& replacement traps"));
     await assert.rejects(exportTrajectoryRunHtml({ cwd, sessionId: "session", runId: "missing", home }), /was not found/);
 
-    const stubGh = join(root, "gh");
-    writeFileSync(stubGh, "#!/bin/sh\ncp \"$4\" \"$GH_STUB_CAPTURE\"\necho 'https://gist.github.com/user/abc123def456'\n", { mode: 0o755 });
+    const stubGh = join(root, "gh stub.mjs");
+    writeFileSync(stubGh, "import { copyFileSync } from 'node:fs'; copyFileSync(process.argv.at(-1), process.env.GH_STUB_CAPTURE); process.stdout.write('https://gist.github.com/user/abc123def456\\n');\n");
     const capture = join(root, "captured.html");
     process.env.GH_STUB_CAPTURE = capture;
     try {
@@ -60,8 +60,8 @@ void test("exportTrajectoryRunHtml renders a self-contained static run report", 
     } finally {
       delete process.env.GH_STUB_CAPTURE;
     }
-    const badGh = join(root, "gh-bad");
-    writeFileSync(badGh, "#!/bin/sh\necho 'gh: not logged in' >&2\nexit 1\n", { mode: 0o755 });
+    const badGh = join(root, "gh bad.mjs");
+    writeFileSync(badGh, "process.stderr.write('gh: not logged in\\n'); process.exitCode = 1;\n");
     await assert.rejects(shareTrajectoryRun({ cwd, sessionId: "session", runId: "run", home, ghPath: badGh }), /not logged in/);
     await assert.rejects(shareTrajectoryRun({ cwd, sessionId: "session", runId: "run", home, ghPath: join(root, "gh-missing") }), /GitHub CLI \(gh\) is not installed/);
   } finally {

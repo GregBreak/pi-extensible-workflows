@@ -1,10 +1,10 @@
 import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
-import { spawnSync } from "node:child_process";
 import { builtinModules } from "node:module";
 import { createRequire } from "node:module";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import type { AgentDefinition, WorkflowCatalogFunction } from "pi-extensible-workflows";
+import { spawnSyncExecutable } from "pi-extensible-workflows/process";
 import type { BuildFailure, BuildOptions, BuildResult } from "esbuild";
 
 export interface PortableWorkflowSource { module: string; export: string }
@@ -96,10 +96,9 @@ export function portableEngineVersion(): string {
 }
 
 export function portablePiVersion(): string {
-  const command = process.platform === "win32" ? "pi.cmd" : "pi";
-  const result = spawnSync(command, ["--version"], { encoding: "utf8" });
+  const result = spawnSyncExecutable("pi", ["--version"], { encoding: "utf8" });
   if (result.error || result.status !== 0) return "unknown";
-  return result.stdout.trim().split(/\r?\n/, 1)[0] ?? "unknown";
+  return result.stdout.toString().trim().split(/\r?\n/, 1)[0] ?? "unknown";
 }
 
 function shellLauncher(): string {
@@ -107,14 +106,14 @@ function shellLauncher(): string {
 }
 
 function windowsLauncher(): string {
-  return "@echo off\r\nnode \"%~dp0payload\\runner.mjs\" %*\r\n";
+  return "@echo off\r\nnode \"%~dp0\\payload\\runner.mjs\" %*\r\n";
 }
 
 function runnerSource(): string {
   return [
     "import { accessSync, constants, existsSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';",
     "import { homedir } from 'node:os';",
-    "import { delimiter, dirname, join, sep } from 'node:path';",
+    "import { delimiter, dirname, join, resolve, sep } from 'node:path';",
     "import { createInterface } from 'node:readline/promises';",
     "import { spawnSync } from 'node:child_process';",
     "import { createRequire } from 'node:module';",
@@ -123,16 +122,26 @@ function runnerSource(): string {
     "const manifest = JSON.parse(readFileSync(join(bundleRoot, 'manifest.json'), 'utf8'));",
     "function bundleSkillPaths() { return (manifest.payload?.skills ?? []).map((name) => join(bundleRoot, 'payload', 'skills', name)); }",
     "function run(command, args) {",
-    "  const result = spawnSync(command, args, { encoding: 'utf8' });",
+    "  const invocation = process.platform === 'win32' && /\\.(?:m?js|cjs)$/i.test(command) ? { file: process.execPath, args: [command, ...args] } : { file: command, args };",
+    "  const result = spawnSync(invocation.file, invocation.args, { encoding: 'utf8' });",
     "  if (result.error) throw result.error;",
     "  return { status: result.status, stdout: String(result.stdout ?? ''), stderr: String(result.stderr ?? '') };",
     "}",
     "function piCommand() {",
-    "  const names = process.platform === 'win32' ? ['pi.cmd', 'pi'] : ['pi'];",
+    "  const names = process.platform === 'win32' ? ['pi.cmd', 'pi.exe', 'pi'] : ['pi'];",
     "  for (const entry of (process.env.PATH ?? '').split(delimiter).filter(Boolean)) {",
     "    for (const name of names) {",
     "      const candidate = join(entry, name);",
-    "      try { accessSync(candidate, constants.X_OK); return candidate; } catch { /* Continue searching PATH. */ }",
+    "      try { accessSync(candidate, process.platform === 'win32' ? constants.F_OK : constants.X_OK); } catch { continue; }",
+    "      if (process.platform === 'win32' && name.toLowerCase().endsWith('.cmd')) {",
+    "        const source = readFileSync(candidate, 'utf8');",
+    "        const match = /[\"']%dp0%[\\\\/](.+?\\.(?:m?js|cjs))[\"']/i.exec(source);",
+    "        if (!match?.[1]) throw new Error('The npm Pi command shim does not expose its Node entrypoint.');",
+    "        const script = resolve(entry, match[1].replace(/[\\\\/]/g, sep));",
+    "        if (!existsSync(script)) throw new Error('The npm Pi command shim points to a missing Node entrypoint: ' + script);",
+    "        return script;",
+    "      }",
+    "      return candidate;",
     "    }",
     "  }",
     "  throw new Error('Pi was not found on PATH. Install Pi through npm before running this bundle.');",

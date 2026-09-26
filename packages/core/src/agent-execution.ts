@@ -2,7 +2,7 @@ import { existsSync, realpathSync, readFileSync } from "node:fs";
 import { copyFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { Type } from "@earendil-works/pi-ai";
 import { Compile } from "typebox/compile";
 import { createAgentSession, DefaultPackageManager, DefaultResourceLoader, defineTool, getAgentDir, ModelRuntime, SessionManager, SettingsManager } from "@earendil-works/pi-coding-agent";
@@ -194,7 +194,7 @@ async function loadNativePromptTemplateModule(): Promise<NativePromptTemplateMod
   }
   promptTemplatePath ??= resolve(dirname(fileURLToPath(import.meta.resolve("@earendil-works/pi-coding-agent"))), "core/prompt-templates.js");
   const packageDirectoryError = packageDirectory.error ? ` Package directory lookup failed: ${packageDirectory.error}` : "";
-  return nativePromptTemplateModule ??= import(promptTemplatePath).then((module) => module as NativePromptTemplateModule).catch((error: unknown) => { throw new Error(`Could not load Pi prompt templates.${packageDirectoryError}`, { cause: error }); });
+  return nativePromptTemplateModule ??= import(pathToFileURL(promptTemplatePath).href).then((module) => module as NativePromptTemplateModule).catch((error: unknown) => { throw new Error(`Could not load Pi prompt templates.${packageDirectoryError}`, { cause: error }); });
 }
 async function expandPromptTemplateForInspection(text: string, templates: readonly { name: string; content: string }[]): Promise<string> {
   return (await loadNativePromptTemplateModule()).expandPromptTemplate(text, templates);
@@ -234,8 +234,10 @@ async function preparePiPrompt(native: PiSession, text: string): Promise<PiPromp
     let expandedPrompt = current;
     if (!inputHandled) {
       const skillExpanded = typeof expandSkillCommand === "function" ? expandSkillCommand.call(session, current) : current;
-      try { expandedPrompt = await expandPromptTemplateForInspection(skillExpanded, Array.isArray(templates) ? templates : []); }
-      catch (error) { diagnostics.push({ type: "error", message: `Pi prompt template expansion is unavailable: ${errorText(error)}`, source: "Pi session" }); }
+      if (Array.isArray(templates) && templates.length > 0) {
+        try { expandedPrompt = await expandPromptTemplateForInspection(skillExpanded, templates); }
+        catch (error) { diagnostics.push({ type: "error", message: `Pi prompt template expansion is unavailable: ${errorText(error)}`, source: "Pi session" }); }
+      } else expandedPrompt = skillExpanded;
     }
     const result = !inputHandled && runner && baseOptions !== undefined ? await runner.emitBeforeAgentStart(expandedPrompt, undefined, baseSystemPrompt, baseOptions) : undefined;
     const prepared = result as { messages?: readonly unknown[]; systemPrompt?: unknown } | undefined;
@@ -326,6 +328,7 @@ async function createLocalPiSessionHandle(input: SessionInput, sessionStartEvent
       noExtensions: true,
       additionalExtensionPaths: extensionPaths,
       noSkills: true,
+      noPromptTemplates: input.noPromptTemplates ?? false,
       additionalSkillPaths: [...new Set([...skillPaths, ...(input.additionalSkillPaths ?? [])])],
       ...(input.extensionFactories?.length ? { extensionFactories: input.extensionFactories } : {}),
       ...(contextFilesOverride ? { agentsFilesOverride: contextFilesOverride } : {}),
@@ -342,7 +345,7 @@ async function createLocalPiSessionHandle(input: SessionInput, sessionStartEvent
     const packageManager = new DefaultPackageManager({ cwd: input.cwd, agentDir, settingsManager });
     const resolved = await packageManager.resolve();
     const extensionPaths = [...new Set(resolved.extensions.filter(({ enabled }) => enabled).map(({ path }) => canonicalPath(path)).filter((path) => !WORKFLOW_HOST_ENTRIES.has(path)))];
-    resourceLoader = new DefaultResourceLoader({ cwd: input.cwd, agentDir, settingsManager, noExtensions: true, additionalExtensionPaths: extensionPaths, ...(input.additionalSkillPaths?.length ? { additionalSkillPaths: [...input.additionalSkillPaths] } : {}), ...(input.extensionFactories?.length ? { extensionFactories: input.extensionFactories } : {}), ...(contextFilesOverride ? { agentsFilesOverride: contextFilesOverride } : {}), ...systemPromptOptions, ...(input.systemPromptAppend ? { appendSystemPromptOverride: (base) => [...base, input.systemPromptAppend ?? ""] } : {}) });
+    resourceLoader = new DefaultResourceLoader({ cwd: input.cwd, agentDir, settingsManager, noExtensions: true, noPromptTemplates: input.noPromptTemplates ?? false, additionalExtensionPaths: extensionPaths, ...(input.additionalSkillPaths?.length ? { additionalSkillPaths: [...input.additionalSkillPaths] } : {}), ...(input.extensionFactories?.length ? { extensionFactories: input.extensionFactories } : {}), ...(contextFilesOverride ? { agentsFilesOverride: contextFilesOverride } : {}), ...systemPromptOptions, ...(input.systemPromptAppend ? { appendSystemPromptOverride: (base) => [...base, input.systemPromptAppend ?? ""] } : {}) });
     await resourceLoader.reload();
   }
   const providerFailures = flushExtensionProviders(resourceLoader, modelRuntime);

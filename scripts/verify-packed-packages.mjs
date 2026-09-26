@@ -13,6 +13,11 @@ const installRoot = resolve(agentRoot, "npm");
 const workspaces = ["packages/core", "packages/cli", "packages/extensions/herdr"];
 
 function json(path) { return JSON.parse(readFileSync(path, "utf8")); }
+function runNpm(args, options) {
+  const npmExecPath = process.env.npm_execpath;
+  if (!npmExecPath || !existsSync(npmExecPath)) throw new Error("npm_execpath is unavailable; invoke this verifier with npm run test:packages.");
+  return execFileSync(process.execPath, [npmExecPath, ...args], options);
+}
 function packagePath(base, name) { return resolve(base, "node_modules", ...name.split("/")); }
 function tarballName({ name, version }) { return `${name.replace(/^@/, "").replaceAll("/", "-")}-${version}.tgz`; }
 function files(path) {
@@ -47,7 +52,7 @@ function relativeImports(source) {
 try {
   mkdirSync(output, { recursive: true });
   const packages = workspaces.map((workspace) => ({ workspace, manifest: json(resolve(root, workspace, "package.json")) }));
-  for (const { workspace } of packages) execFileSync("npm", ["pack", `--workspace=${workspace}`, "--pack-destination", output], { cwd: root, stdio: "pipe", timeout: 120_000 });
+  for (const { workspace } of packages) runNpm(["pack", `--workspace=${workspace}`, "--pack-destination", output], { cwd: root, stdio: "pipe", timeout: 120_000 });
 
   const errors = [];
   for (const { manifest } of packages) {
@@ -76,7 +81,7 @@ try {
   if (errors.length) throw new Error(errors.join("\n"));
 
   const tarballs = packages.map(({ manifest }) => resolve(output, tarballName(manifest)));
-  execFileSync("npm", ["install", "--prefix", installRoot, "--ignore-scripts", "--omit=dev", "--legacy-peer-deps", ...tarballs], { stdio: "pipe", timeout: 120_000 });
+  runNpm(["install", "--prefix", installRoot, "--ignore-scripts", "--omit=dev", "--legacy-peer-deps", ...tarballs], { stdio: "pipe", timeout: 120_000 });
   const semanticConsumer = resolve(agentRoot, "semantic-map-installed-consumer.mjs");
   writeFileSync(semanticConsumer, [
     'import assert from "node:assert/strict";',
@@ -151,7 +156,7 @@ try {
   const launchArgs = (launch.stdout ?? "").split("\n");
   if (launch.error) throw launch.error;
   if (launch.status !== 0 || launchArgs.includes("--model") || !launchArgs.includes("--append-system-prompt") || launchArgs.slice(-3, -1).join(" ") !== "-p hello" || !(launch.stderr ?? "").includes("developer-model")) throw new Error(`Standalone pi-role launch smoke test failed (${String(launch.status)}):\n${launch.stdout ?? ""}${launch.stderr ?? ""}`);
-  execFileSync("npm", ["audit", "--prefix", installRoot, "--omit=dev"], { stdio: "pipe", timeout: 60_000 });
+  runNpm(["audit", "--prefix", installRoot, "--omit=dev"], { stdio: "pipe", timeout: 60_000 });
 
   const localPackages = ["pi-extensible-workflows", "@piewf/herdr"].map((name) => packagePath(installRoot, name));
   const extensionCount = localPackages.reduce((count, directory) => count + strings(json(resolve(directory, "package.json")).pi?.extensions).length, 0);

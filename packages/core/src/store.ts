@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { access, mkdir, readdir, readFile, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
+import { access, mkdir, readdir, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { HARD_TERMINAL_RUN_STATES, WorkflowError, type JsonValue, type LaunchSnapshot, type WorkflowErrorCode, type WorkflowRunEvent } from "./types.js";
@@ -13,7 +13,7 @@ import {
   type Journal, type PendingWorkflowDecision, type PersistedOwnershipNode,
   type PersistedRun, type RunSummary, type RunSummaryArtifacts, type WorktreeReference,
 } from "./decoders.js";
-import { atomicJson, atomicPrettyJson, atomicWriteFile, git, gitIdentity, json } from "./io.js";
+import { atomicJson, atomicPrettyJson, atomicWriteFile, git, gitIdentity, json, renameWithRetry } from "./io.js";
 import { runsDirectory, safePart, structuralPath } from "./paths.js";
 
 const SYSTEM_PROMPT_STORAGE = ".system-prompts";
@@ -77,7 +77,7 @@ export class RunStore {
       await atomicJson(join(temporary, "state.json"), run);
       await createSystemPromptStorage(temporary, true);
       await atomicJson(join(temporary, "summary.json"), summaryFromRun(run, this.directory, { completed: {} }, undefined, new Date().toISOString()));
-      await rename(temporary, this.directory);
+      await renameWithRetry(temporary, this.directory);
     } catch (error) {
       await rm(temporary, { recursive: true, force: true });
       throw error;

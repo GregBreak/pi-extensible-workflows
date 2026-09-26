@@ -14,11 +14,17 @@ export default tseslint.config(
     rules: { "@typescript-eslint/require-await": "off" },
   },
   {
-    files: ["scripts/**/*.mjs", "packages/core/bench/**/*.mjs", "packages/core/test/**/*.mjs", "packages/core/subagents/**/*.mjs", "packages/extensions/herdr/**/*.js", "packages/extensions/herdr/**/*.mjs"],
+    files: ["scripts/**/*.mjs", "packages/core/bench/**/*.mjs", "packages/core/test/**/*.mjs", "packages/core/subagents/**/*.mjs", "packages/extensions/herdr/**/*.js", "packages/extensions/herdr/**/*.mjs", "packages/core/trajectory/test/fixtures/semantic-map-feasibility/live-profile.js"],
     ...tseslint.configs.disableTypeChecked,
     languageOptions: {
       parserOptions: { project: false, projectService: false },
       globals: { process: "readonly", AbortController: "readonly" },
+    },
+  },
+  {
+    files: ["packages/core/trajectory/test/fixtures/semantic-map-feasibility/live-profile.js"],
+    languageOptions: {
+      globals: { Archify: "readonly", document: "readonly", Event: "readonly", getComputedStyle: "readonly", location: "readonly", parent: "readonly", self: "readonly", window: "readonly" },
     },
   },
   {
