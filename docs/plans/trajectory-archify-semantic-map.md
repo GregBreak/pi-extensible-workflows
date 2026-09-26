@@ -1,17 +1,26 @@
-# Trajectory: sostituire Mermaid con Archify Semantic Map
+# Trajectory: integrare Archify Semantic Map sulla release ufficiale
 
 ## Stato e decisione
 
 **Piano di implementazione; nessuna integrazione runtime eseguita in questo commit.**
 
 - Repository: `GregBreak/pi-extensible-workflows`.
-- Branch: `plan/trajectory-archify-semantic-map`.
-- Base analizzata: `f94fd0205c900768d7bace20e2d31bffa6a99849`.
+- Branch attivo: `feat/trajectory-archify-v5.17.0`.
+- Base ufficiale aggiornata: **`v5.17.0`**, commit **`b86636786a097fedbcf64747579aa8f8ff59d1bb`**, coincidente con `vekexasia/pi-extensible-workflows:main` al controllo del 26 settembre 2026.
+- Branch precedente conservato: `plan/trajectory-archify-semantic-map`, analisi originaria sul fork `f94fd0205c900768d7bace20e2d31bffa6a99849`.
 - Indicazione aggiornata del proprietario: **eliminare Mermaid, mantenere solo Archify come viewer grafico**. Non aggiungere una terza visualizzazione né conservare Mermaid come fallback.
 - Il **Gantt nativo rimane la vista principale e predefinita**. Archify è una scheda secondaria, `Semantic Map`, caricata esclusivamente su richiesta.
 - Trajectory mantiene l'autorità sui dati live, sulla selezione e sulle azioni. La mappa è una proiezione effimera, non un secondo datastore.
 
-La rimozione di Mermaid e l'attivazione di Archify fanno parte della stessa sostituzione funzionale. Questo documento descrive le modifiche da realizzare: non dichiara Mermaid già rimosso dal codice.
+### Aggiornamento vincolante della base
+
+Su richiesta del proprietario, l'implementazione parte dalla release ufficiale **v5.17.0**, non dalla vecchia versione del fork. Dal vecchio branch è stato riportato **soltanto il commit documentale del piano**, nessun codice Mermaid.
+
+**La base ufficiale non contiene Mermaid.** Le sezioni sotto che descrivono rimozioni e risparmi rispetto a Mermaid sono evidenza storica sul vecchio fork: NON sono operazioni da introdurre artificialmente sulla nuova base. La nuova integrazione deve mantenere l'assenza di Mermaid e aggiungere Archify come unico viewer semantico. Non copiare `index.html`, test o componenti runtime dalla vecchia versione.
+
+Prevale l'addendum [Base ufficiale e differenze operative](trajectory-archify-upstream-baseline.md): richiede di preservare anche Prism e i nuovi test browser/CDP ufficiali, rivalutare il packaging con le sue due directory compilate di asset, ricalcolare il peso rispetto alla release ufficiale e adattare l'epic E3 all'integrazione, anziché alla rimozione di codice inesistente.
+
+Nessuna integrazione runtime è stata eseguita in questo commit. Il workflow SMART precedente è stato fermato durante la discovery, prima di qualsiasi modifica ai sorgenti.
 
 ### Priorità confermata: progetto leggero e manutenzione contenuta
 
@@ -24,7 +33,7 @@ L'assenza di dipendenze npm è necessaria, ma non sufficiente: anche un grande v
 - F0 produce anche inventario delle patch locali, dipendenze fra capacità mantenute e prova di rigenerazione dagli input fissati. Se il lifecycle live richiede interventi distribuiti in molti moduli, il gate non passa senza una nuova decisione del proprietario.
 - Aggiornamenti upstream manuali e intenzionali, revisione delle modifiche e rerun dei test; niente auto-update, dipendenze remote runtime o download durante l'installazione.
 
-## 1. Riscontri sulla base attuale
+## 1. Riscontri sulla base originaria del fork (da rivalidare su v5.17.0)
 
 | Area | Evidenza nella repository | Conseguenza |
 | --- | --- | --- |
@@ -286,7 +295,7 @@ Per scope più grandi mostrare gruppi collassati, filtro per agente/tentativo e 
 | Bridge + adapter + renderer + adattamenti | 10–50 KB come ipotesi iniziale | **Non validata**, soprattutto per lifecycle e layout |
 | Tre asset finali | Circa 0,8–0,85 MB se l'ipotesi regge | Budget iniziale, gate di revisione a 1 MB |
 
-La sostituzione può ridurre di circa **2,7 MB** la componente grafica non compressa del package, invece di aggiungere quasi 1 MB a Mermaid. Verificare il delta completo con la build finale e il tarball reale; il package contiene anche altro codice.
+Rispetto al vecchio fork con Mermaid, la sostituzione avrebbe potuto ridurre di circa **2,7 MB** la componente grafica non compressa. **Questo risparmio NON si applica alla nuova base ufficiale v5.17.0, che non contiene Mermaid:** Archify è un incremento netto da misurare e contenere. Verificare il delta completo rispetto a `b866367` con la build finale e il tarball reale; il package contiene anche altro codice.
 
 Il server attuale serve gli asset con `Content-Length` e `Cache-Control: no-store`, **senza compressione HTTP**. Pertanto 200–300 KB non sono oggi una garanzia di trasferimento: in V1, se il server resta invariato su questo punto, prevedere circa la dimensione raw dei tre file al primo caricamento. La compressione del tarball npm è un'altra misura.
 
