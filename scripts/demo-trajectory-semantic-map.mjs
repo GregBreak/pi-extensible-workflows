@@ -164,7 +164,8 @@ ${agents}
 4. \`04-detail-controlled-error.png\` - map double-click opens the auditor's detail/transcript (controlled failure).
 5. \`05-detail-recorded-result.png\` - synthesizer detail with its recorded result.
 6. \`06-map-after-transcripts.png\` - back on the map after opening transcripts. Node kinds: ${kinds(observation.nodesAfterTranscript)} (before transcripts: ${kinds(observation.nodesBeforeTranscript)}).
-${observation.overflow ? `7. \`07-overflow-partial-map.png\` - ${String(observation.overflow.persistedAgents)}-agent run: the map draws ${String(observation.overflow.visibleAgentNodes)} agent nodes and says "${observation.overflow.completeness}". The cut is the V0 projection limit (16 agents / 8 relations / 16 path segments in the parent), not data loss: all agents stay in the persisted run and the Gantt.\n` : ""}
+${observation.overflow ? `7. \`07-overflow-partial-map.png\` - ${String(observation.overflow.persistedAgents)}-agent run: the map draws ${String(observation.overflow.visibleAgentNodes)} agent nodes and says "${observation.overflow.completeness}". The map pages agents 16 at a time (bounded projection per page), not data loss: all agents stay in the persisted run and the Gantt.
+8. \`08-overflow-second-page.png\` - the same run after the \`›\` page button: ${String(observation.overflow.secondPageLabel ?? "")}, ${String(observation.overflow.secondPageAgentNodes ?? 0)} agent boxes; the workflow totals still cover all ${String(observation.overflow.persistedAgents)} agents.\n` : ""}
 ## V0 limits (explicit)
 
 - Phases are not drawn as map nodes. They are visible in the Gantt agent table ("PHASE discover", "PHASE synthesize") and the inspector's Phase row. On the map, the \`parallel\` keys of phase one (discover, docs, source, audit) appear as task nodes; the top-level sequential synthesizer/reviewer have an empty structural path and V0 draws no recorded dependency edge between them.

@@ -132,3 +132,46 @@ void test("token usage is projected per agent and as a run total, without invent
   assert.deepEqual(usage.agents.map((item) => [item.agentId, item.usage.context]), [["a", 1557], ["b", undefined]]);
   assert.equal(adaptSemanticSnapshot({ scope: { publisherId: "p", targetKind: "run", targetId: "run" }, run: { id: "run", state: "running", agents: [{ id: "a", state: "queued" }] } }).usage, undefined);
 });
+
+void test("long boxes start collapsed into head, summary card and tail, and expand on request", () => {
+  const events = Array.from({ length: 20 }, (_, index) => index % 2 === 0 ? { kind: "assistant" as const } : { kind: "tool" as const, id: `t${String(index)}`, name: index === 7 ? "edit" : "read", state: index === 7 ? "failed" : "completed" });
+  const graph = adaptSemanticSnapshot({ scope: { publisherId: "p", targetKind: "run", targetId: "run" }, run: { id: "run", state: "running", agents: [{ id: "long", state: "completed", output: { status: "available" }, events }, { id: "short", state: "completed", output: { status: "available" } }] } });
+  const engine = new SemanticAgentLayout();
+  const collapsed = engine.arrange(graph);
+  const box = collapsed.groups.find((group) => group.agentId === "long"); assert.ok(box);
+  assert.deepEqual([box.collapsible, box.collapsed, box.count, box.hidden.length], [true, true, 22, 16]);
+  assert.ok(box.summarySlot);
+  assert.equal(box.summarySlot.slot, 3, "head of 3 cards, then the summary card");
+  const drawn = graph.nodes.filter((node) => node.agentId === "long" && collapsed.slots.has(node.id));
+  assert.equal(drawn.length, 6);
+  assert.ok(drawn.some((node) => node.kind === "result"), "the result stays visible in the tail");
+  const short = collapsed.groups.find((group) => group.agentId === "short"); assert.ok(short);
+  assert.deepEqual([short.collapsible, short.collapsed, short.summarySlot], [false, false, undefined]);
+  const expanded = engine.arrange(graph, (agentId) => agentId === "long");
+  const open = expanded.groups.find((group) => group.agentId === "long"); assert.ok(open);
+  assert.deepEqual([open.collapsible, open.collapsed, open.hidden.length, open.summarySlot], [true, false, 0, undefined]);
+  assert.equal(graph.nodes.filter((node) => node.agentId === "long" && expanded.slots.has(node.id)).length, 22);
+  assert.ok(open.height > box.height);
+});
+
+void test("recorded launch order splits a phase into waves: parallel scopes share a row, sequential calls chain", () => {
+  const agent = (id: string, launch: number, phaseIndex: number, phase: string, structuralPath: string[] = []) => ({ id, name: id, state: "completed", launch, phaseIndex, phase, structuralPath, output: { status: "available" } });
+  const graph = adaptSemanticSnapshot({ scope: { publisherId: "p", targetKind: "run", targetId: "run" }, run: { id: "run", state: "completed", agents: [
+    agent("plan", 0, 0, "plan"),
+    agent("r1", 1, 1, "research", ["research", "a"]), agent("r2", 2, 1, "research", ["research", "b"]), agent("r3", 3, 1, "research", ["research", "c"]),
+    agent("design", 4, 2, "build"), agent("impl", 5, 2, "build"), agent("notes", 6, 2, "build"),
+    agent("v1", 7, 3, "verify", ["verify", "a"]), agent("v2", 8, 3, "verify", ["verify", "b"])
+  ] } });
+  const stageOf = (id: string) => graph.nodes.find((node) => node.kind === "agent" && node.sourceRef === id)?.stage;
+  assert.deepEqual(["plan", "r1", "r2", "r3", "design", "impl", "notes", "v1", "v2"].map(stageOf), [0, 1, 1, 1, 2, 3, 4, 5, 5]);
+  const handover = graph.edges.filter((edge) => edge.kind === "phase").map((edge) => {
+    const from = graph.nodes.find((node) => node.id === edge.from)?.sourceRef; const to = graph.nodes.find((node) => node.id === edge.to)?.sourceRef;
+    return `${String(from)}>${String(to)}`;
+  }).sort();
+  assert.deepEqual(handover, ["design>impl", "impl>notes", "notes>v1", "notes>v2", "plan>r1", "plan>r2", "plan>r3", "r1>design", "r2>design", "r3>design"], "fan-out, fan-in and a sequential chain inside the build phase");
+  const layout = new SemanticAgentLayout().arrange(graph);
+  assert.deepEqual(layout.stages.map((stage) => stage.label ?? ""), ["plan", "research", "build", "", "", "verify"], "the phase label sits on its first wave only");
+  const group = (id: string) => { const value = layout.groups.find((item) => item.agentId === id); assert.ok(value); return value; };
+  assert.ok(group("design").y < group("impl").y && group("impl").y < group("notes").y, "sequential agents get their own rows");
+  assert.deepEqual([group("r1").firstRow, group("r2").firstRow, group("r3").firstRow], [true, true, false]);
+});

@@ -80,7 +80,7 @@ export type WalkthroughObservation = {
   mapRequestsAtClose: number;
   reopenStatus: string;
   runStateAfterReopen: string;
-  overflow?: { status: string; completeness: string; visibleAgentNodes: number; persistedAgents: number };
+  overflow?: { status: string; completeness: string; visibleAgentNodes: number; persistedAgents: number; pagerLabel?: string; secondPageAgentNodes?: number; secondPageLabel?: string; firstPageIds?: string[]; secondPageIds?: string[] };
   webSockets: number;
   mapAssetRequests: string[];
   externalRequests: string[];
@@ -279,6 +279,16 @@ export async function runLiveDemoWalkthrough(options: WalkthroughOptions): Promi
       const persisted = await demo.loadRun(demo.overflowRunId);
       overflow = { status: String(await evaluate("document.getElementById('semantic-map-status').textContent")), completeness: String(await mapEvaluate(overflowContext, "document.getElementById('semantic-map-completeness')?.textContent||''")), visibleAgentNodes: nodes.filter((node) => node.kind === "agent" && !node.label.includes(" · attempt ")).length, persistedAgents: Array.isArray(persisted.agents) ? persisted.agents.length : 0 };
       await screenshot("07-overflow-partial-map.png");
+      // More than 16 agents: the map pages them 16 at a time; the next page shows the remaining agents only.
+      const firstPageIds = nodes.filter((node) => node.kind === "agent").map((node) => node.id);
+      const pagerLabel = String(await evaluate("document.getElementById('semantic-map-pager').hidden ? 'hidden' : document.getElementById('semantic-map-page').textContent"));
+      await evaluate("document.getElementById('semantic-map-next').click()");
+      await waitFor("/^Agents 17/.test(document.getElementById('semantic-map-page').textContent)", 10_000);
+      await waitForMap(overflowContext, "document.querySelectorAll('.semantic-map-node[data-node-kind=agent]').length>0 && document.querySelectorAll('.semantic-map-node[data-node-kind=agent]').length<16");
+      const secondPage = await mapNodes(overflowContext);
+      const secondPageIds = secondPage.filter((node) => node.kind === "agent").map((node) => node.id);
+      Object.assign(overflow, { pagerLabel, secondPageAgentNodes: secondPageIds.length, secondPageLabel: String(await evaluate("document.getElementById('semantic-map-page').textContent")), firstPageIds, secondPageIds });
+      await screenshot("08-overflow-second-page.png");
       await evaluate("document.getElementById('timeline-tab').click()");
       await waitFor("document.querySelectorAll('#semantic-map-host iframe').length===0");
     }

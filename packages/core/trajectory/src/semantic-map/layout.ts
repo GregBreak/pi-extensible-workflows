@@ -14,6 +14,10 @@ const ROW_GAP = 30;
 /** Room above the first stage for the viewer's floating target title. */
 const TOP = 46;
 const STATS_RESERVE = 72;
+/** Boxes with more cards than this start collapsed: head, a summary card for the middle, and the most recent tail. */
+export const COLLAPSE_AT = 12;
+const COLLAPSED_HEAD = 3;
+const COLLAPSED_TAIL = 3;
 /** `row`/`col` are the serpentine grid position inside the agent box (odd rows run right to left). */
 export type SemanticSlot = { x: number; y: number; slot: number; row: number; col: number; group: string };
 export type SemanticAgentGroup = {
@@ -23,8 +27,13 @@ export type SemanticAgentGroup = {
   stageBottom: number;
   /** Bottom of this box's row inside its stage and the free vertical lane left of the box, for arrow routing. */
   rowBottom: number; laneX: number;
+  /** True for boxes in the first row of their wave: arrows from the previous wave can drop straight into them. */
+  firstRow: boolean;
+  /** Collapsible boxes: whether the middle is folded into a summary card, the folded node IDs and that card's slot. */
+  collapsible: boolean; collapsed: boolean; hidden: string[]; summarySlot?: SemanticSlot;
 };
-export type SemanticStage = { index: number; label?: string; x: number; y: number };
+/** One execution wave (row block). `label` and `phase` are set only on the first wave of a recorded phase. */
+export type SemanticStage = { index: number; label?: string; phase?: number; x: number; y: number };
 export type SemanticLayout = { groups: SemanticAgentGroup[]; slots: Map<string, SemanticSlot>; stages: SemanticStage[]; width: number; height: number };
 const groupId = (agentId: string): string => JSON.stringify(["agent", agentId]);
 const inBox = (node: SemanticNode): number => node.kind === "agent" ? 0 : node.kind === "result" ? 2 : 1;
@@ -39,7 +48,7 @@ export class SemanticAgentLayout {
 
   clear(): void { this.colorOrder.clear(); }
 
-  arrange(graph: SemanticGraph): SemanticLayout {
+  arrange(graph: SemanticGraph, isExpanded: (agentId: string) => boolean = () => false): SemanticLayout {
     const byAgent = new Map<string, SemanticNode[]>();
     for (const node of graph.nodes) {
       if (node.agentId === undefined) continue;
@@ -61,11 +70,16 @@ export class SemanticAgentLayout {
     const slots = new Map<string, SemanticSlot>();
     const stages: SemanticStage[] = [];
     let top = TOP;
+    let previousPhase: number | undefined;
     let width = 1000;
     for (const stage of stageIndexes) {
       const members = agentIds.filter((agentId) => (primaryOf(agentId)?.stage ?? 0) === stage);
-      const label = primaryOf(members[0] ?? "")?.stageLabel;
-      stages.push({ index: stage, ...(label === undefined ? {} : { label }), x: MARGIN, y: top + 16 });
+      const first = primaryOf(members[0] ?? "");
+      const label = first?.stageLabel;
+      const phase = first?.phaseNumber;
+      const newPhase = phase !== undefined && phase !== previousPhase;
+      previousPhase = phase;
+      stages.push({ index: stage, ...(newPhase && label !== undefined ? { label, phase } : {}), x: MARGIN, y: top + 16 });
       const stageGroups: SemanticAgentGroup[] = [];
       let rowTop = top + STAGE_LABEL;
       let rowGroups: SemanticAgentGroup[] = [];
@@ -74,22 +88,30 @@ export class SemanticAgentLayout {
         const column = index % BOXES_PER_ROW;
         if (index > 0 && column === 0) closeRow();
         const boxTop = rowTop;
-        const nodes = [...(byAgent.get(agentId) ?? [])].sort((a, b) => inBox(a) - inBox(b) || (a.order ?? 0) - (b.order ?? 0) || a.id.localeCompare(b.id));
+        const all = [...(byAgent.get(agentId) ?? [])].sort((a, b) => inBox(a) - inBox(b) || (a.order ?? 0) - (b.order ?? 0) || a.id.localeCompare(b.id));
+        const collapsible = all.length > COLLAPSE_AT;
+        const collapsed = collapsible && !isExpanded(agentId);
+        const hidden = collapsed ? all.slice(COLLAPSED_HEAD, all.length - COLLAPSED_TAIL) : [];
+        // The summary card takes the place of the folded middle; `undefined` marks its slot in the serpentine.
+        const nodes: (SemanticNode | undefined)[] = collapsed ? [...all.slice(0, COLLAPSED_HEAD), undefined, ...all.slice(all.length - COLLAPSED_TAIL)] : all;
         const rows = Math.max(1, Math.ceil(nodes.length / COLUMNS));
         const x = MARGIN + column * (BOX_WIDTH + BOX_GAP);
         const height = HEADER + rows * SEMANTIC_CARD.stepY + FOOTER - (SEMANTIC_CARD.stepY - SEMANTIC_CARD.height);
         const primary = primaryOf(agentId);
         const key = groupId(agentId);
         stageGroups.push({
-          id: key, agentId, label: primary?.label ?? `Agent ${agentId}`, status: primary?.rawStatus ?? "", count: nodes.length,
-          colorIndex: (this.colorOrder.get(agentId) ?? 0) % 8, running: nodes.some((node) => node.state === "running"),
-          stage, ...(label === undefined ? {} : { stageLabel: label }), x, y: boxTop, width: BOX_WIDTH, height, stageBottom: 0, rowBottom: 0, laneX: x - BOX_GAP / 2
+          id: key, agentId, label: primary?.label ?? `Agent ${agentId}`, status: primary?.rawStatus ?? "", count: all.length,
+          colorIndex: (this.colorOrder.get(agentId) ?? 0) % 8, running: all.some((node) => node.state === "running"),
+          stage, ...(label === undefined ? {} : { stageLabel: label }), x, y: boxTop, width: BOX_WIDTH, height, stageBottom: 0, rowBottom: 0, laneX: x - BOX_GAP / 2, firstRow: index < BOXES_PER_ROW,
+          collapsible, collapsed, hidden: hidden.map((node) => node.id)
         });
-        rowGroups.push(stageGroups[stageGroups.length - 1] as SemanticAgentGroup);
+        const group = stageGroups[stageGroups.length - 1] as SemanticAgentGroup;
+        rowGroups.push(group);
         nodes.forEach((node, slot) => {
           const row = Math.floor(slot / COLUMNS);
           const col = row % 2 === 0 ? slot % COLUMNS : COLUMNS - 1 - (slot % COLUMNS);
-          slots.set(node.id, { x: x + 12 + col * SEMANTIC_CARD.stepX, y: boxTop + HEADER + row * SEMANTIC_CARD.stepY, slot, row, col, group: key });
+          const position = { x: x + 12 + col * SEMANTIC_CARD.stepX, y: boxTop + HEADER + row * SEMANTIC_CARD.stepY, slot, row, col, group: key };
+          if (node) slots.set(node.id, position); else group.summarySlot = position;
         });
         width = Math.max(width, x + BOX_WIDTH + MARGIN);
       });

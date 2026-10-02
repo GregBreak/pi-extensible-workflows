@@ -120,10 +120,15 @@ void test("V0-D live demo walkthrough in real headless Chrome: Gantt first, lazy
     assert.equal(observed.overflow.persistedAgents, 18);
     assert.ok(observed.overflow.visibleAgentNodes <= 16 && observed.overflow.visibleAgentNodes < observed.overflow.persistedAgents, JSON.stringify(observed.overflow));
     assert.match(observed.overflow.completeness, /^Partial graph/);
+    assert.equal(observed.overflow.pagerLabel, "Agents 1–16 of 18");
+    assert.equal(observed.overflow.secondPageLabel, "Agents 17–18 of 18");
+    assert.equal(observed.overflow.secondPageAgentNodes, 2, "the second page draws the remaining agents");
+    const firstPage = observed.overflow.firstPageIds ?? [];
+    assert.ok((observed.overflow.secondPageIds ?? []).every((id) => !firstPage.includes(id)), "pages do not overlap");
     assert.equal(observed.webSockets, 1, "the page opens exactly one WebSocket; the viewer adds none");
     assert.deepEqual(observed.externalRequests, []);
     assert.deepEqual(observed.consoleErrors, []);
-    assert.equal(observed.screenshots.length, 7);
+    assert.equal(observed.screenshots.length, 8, "seven walkthrough steps plus the second agent page");
     for (const file of observed.screenshots) assert.ok(statSync(file).size > 10_000 && readFileSync(file).subarray(1, 4).toString("latin1") === "PNG", file);
     t.diagnostic(`live demo: tab-to-ready=${observed.tabToReadyMs.toFixed(1)} ms; release-to-visible=${String(observed.releaseToVisibleMs)} ms (includes scripted model pace); nodes before/after transcripts=${String(observed.nodesBeforeTranscript.length)}/${String(observed.nodesAfterTranscript.length)}; overflow ${String(observed.overflow.visibleAgentNodes)}/${String(observed.overflow.persistedAgents)} agents drawn; evidence=${evidenceDir}`);
   } finally {

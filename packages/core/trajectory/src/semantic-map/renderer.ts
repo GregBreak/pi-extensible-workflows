@@ -18,8 +18,33 @@ export type ArchifyApi = {
 };
 type RenderResult = { structural: boolean; nodeCount: number; edgeCount: number };
 type Slot = SemanticSlot;
-type GroupElements = { backdrop: SVGGElement; shape: SVGRectElement; label: SVGTextElement; scope: SVGTextElement; status: SVGTextElement; stats: SVGTextElement; nodes: SVGGElement };
-type NodeElements = { group: SVGGElement; shape: SVGPathElement; inner: SVGRectElement; loop: SVGPathElement; count: SVGTextElement; label: SVGTextElement; status: SVGTextElement };
+type GroupElements = {
+  backdrop: SVGGElement; shape: SVGRectElement; label: SVGTextElement; scope: SVGTextElement; status: SVGTextElement; stats: SVGTextElement; nodes: SVGGElement;
+  /** Collapsible boxes: header toggle, the summary card standing for the folded middle and its two connectors. */
+  toggle: SVGTextElement; summary: SVGGElement; summaryLabel: SVGTextElement; summaryDetail: SVGTextElement; summaryIssues: SVGTextElement; links: SVGGElement;
+};
+type NodeElements = { group: SVGGElement; stack: SVGPathElement; shape: SVGPathElement; inner: SVGRectElement; loop: SVGPathElement; count: SVGTextElement; label: SVGTextElement; status: SVGTextElement };
+/** Short "what is folded" line: assistant turns plus the most frequent tools (grouped tool cards count every call). */
+function foldedSummary(nodes: readonly SemanticNode[]): { detail: string; issues: string } {
+  const tools = new Map<string, number>();
+  let assistants = 0, others = 0, failed = 0, running = 0;
+  for (const node of nodes) {
+    if (node.kind === "tool-call") tools.set(node.label, (tools.get(node.label) ?? 0) + (node.count ?? 1));
+    else if (node.kind === "assistant") assistants += 1;
+    else others += 1;
+    failed += node.state === "failure" ? Math.max(1, node.failedCount ?? 0) : node.failedCount ?? 0;
+    if (node.state === "running") running += 1;
+  }
+  const top = [...tools].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).slice(0, 2).map(([name, calls]) => `${name.length > 10 ? `${name.slice(0, 9)}…` : name} ×${String(calls)}`);
+  // Fits one card line (about 24 monospace characters at the card font size).
+  let detail = "";
+  for (const part of [...top, ...(assistants ? [`asst ×${String(assistants)}`] : []), ...(others ? [`other ×${String(others)}`] : [])]) {
+    const next = detail ? `${detail} · ${part}` : part;
+    if (next.length > 26) break;
+    detail = next;
+  }
+  return { detail, issues: [failed ? `${String(failed)} failed` : "", running ? `${String(running)} running` : ""].filter(Boolean).join(" · ") };
+}
 
 /** One outline per node kind, so agent, system, user, assistant, tool and result cards are told apart by shape. */
 function shapePath(kind: SemanticNode["kind"]): string {
@@ -104,6 +129,8 @@ function edgePath(from: Slot, to: Slot, groups: ReadonlyMap<string, SemanticAgen
     const channel = target.stage !== source.stage ? source.stageBottom + 18 + (lane % 4) * 7 : target.y - 12 - (lane % 3) * 3;
     // Boxes below the source inside its stage are passed through the free lane left of the source box.
     const detour = source.rowBottom < source.stageBottom || channel < sourceBottom ? ` V ${n(belowRow)} H ${n(source.laneX - (lane % 3) * 3)}` : "";
+    // Boxes below the first row of the target wave are entered from the free lane left of the box, never through boxes above.
+    if (!target.firstRow) return `M ${n(sx)} ${n(sourceBottom)}${detour} V ${n(channel)} H ${n(target.laneX + (lane % 3) * 3)} V ${n(target.y - 12)} H ${n(tx)} V ${n(target.y)}`;
     return `M ${n(sx)} ${n(sourceBottom)}${detour} V ${n(channel)} H ${n(tx)} V ${n(target.y)}`;
   }
   return `M ${n(sx)} ${n(sourceBottom)} V ${n(belowRow)} H ${n(tx)} V ${n(target.y + target.height)}`;
@@ -127,6 +154,10 @@ export class SemanticMapRenderer {
   private readonly onKeyDown: (event: KeyboardEvent) => void;
   private scopeKey = "";
   private disposed = false;
+  /** Viewer-local presentation state: boxes the user expanded. Never sent to the parent. */
+  private readonly expanded = new Set<string>();
+  private structureKey = "";
+  private lastGraph: SemanticGraph | undefined;
 
   constructor(private readonly archify: ArchifyApi = window.Archify as ArchifyApi) {
     const found = document.querySelector(".diagram-container > svg");
@@ -142,8 +173,8 @@ export class SemanticMapRenderer {
     this.nodeLayer = layer("semantic-map-nodes");
     this.statsLayer = layer("semantic-map-canvas-stats");
     this.svg.append(this.stageLayer, this.groupLayer, this.edgeLayer, this.nodeLayer, this.statsLayer);
-    this.onClick = (event) => { this.selectFromEvent(event); };
-    this.onKeyDown = (event) => { if (event.key === "Enter" || event.key === " ") this.selectFromEvent(event); };
+    this.onClick = (event) => { if (!this.toggleFromEvent(event)) this.selectFromEvent(event); };
+    this.onKeyDown = (event) => { if ((event.key === "Enter" || event.key === " ") && !this.toggleFromEvent(event)) this.selectFromEvent(event); };
     this.svg.addEventListener("click", this.onClick);
     this.svg.addEventListener("keydown", this.onKeyDown);
   }
@@ -162,27 +193,31 @@ export class SemanticMapRenderer {
     if (this.scopeKey && nextScope !== this.scopeKey) this.clearGraph();
     this.scopeKey = nextScope;
     // Workflow and scope nodes stay in the graph (identity, scope breadcrumbs, status) but are not drawn as cards.
-    const drawn = graph.nodes.filter((item) => item.agentId !== undefined);
-    const nextNodes = new Map(drawn.map((item) => [item.id, item]));
-    const drawnEdges = edges.filter((item) => nextNodes.has(item.from) && nextNodes.has(item.to));
-    const nextEdges = new Map(drawnEdges.map((item) => [item.id, item]));
-    const structural = [...this.nodeElements.keys()].some((id) => !nextNodes.has(id)) || drawn.some((node) => !this.nodeElements.has(node.id) || this.nodeElements.get(node.id)?.group.getAttribute("data-agent-id") !== (node.agentId ?? "") || this.nodeElements.get(node.id)?.group.getAttribute("data-node-order") !== String(node.order ?? 0)) || [...this.edgeElements.keys()].some((id) => !nextEdges.has(id)) || [...nextEdges.keys()].some((id) => !this.edgeElements.has(id));
-    const active = this.archify.focus?.active() ?? null;
-    const activeIds = Array.isArray(active) ? active : active ? [active] : [];
-    const removed = activeIds.some((id) => !nextNodes.has(id));
-
-    for (const [id, entry] of this.nodeElements) if (!nextNodes.has(id)) { entry.group.remove(); this.nodeElements.delete(id); this.slots.delete(id); }
-    for (const [id, entry] of this.edgeElements) if (!nextEdges.has(id)) { entry.remove(); this.edgeElements.delete(id); }
+    const candidates = graph.nodes.filter((item) => item.agentId !== undefined);
+    const candidateKey = JSON.stringify([candidates.map((node) => [node.id, node.agentId, node.order ?? 0]), edges.map((edge) => edge.id), [...this.expanded].sort()]);
+    const structural = candidateKey !== this.structureKey || !this.arrangement;
+    this.structureKey = candidateKey;
     if (structural || !this.arrangement) {
-      this.arrangement = this.layout.arrange(graph);
+      this.arrangement = this.layout.arrange(graph, (agentId) => this.expanded.has(agentId));
       this.slots = this.arrangement.slots;
       setAttribute(this.svg, "viewBox", `0 0 ${String(this.arrangement.width)} ${String(this.arrangement.height)}`);
       // CSSOM sizing (not a style attribute): large maps keep a readable scale and the embedded page scrolls instead.
       this.svg.style.minWidth = `${count(this.arrangement.width * 0.82)}px`;
       this.renderStages(this.arrangement);
     }
+    // Cards folded into a collapsed box's summary have no slot and are not drawn.
+    const drawn = candidates.filter((item) => this.slots.has(item.id));
+    const nextNodes = new Map(drawn.map((item) => [item.id, item]));
+    const drawnEdges = edges.filter((item) => nextNodes.has(item.from) && nextNodes.has(item.to));
+    const nextEdges = new Map(drawnEdges.map((item) => [item.id, item]));
+    const active = this.archify.focus?.active() ?? null;
+    const activeIds = Array.isArray(active) ? active : active ? [active] : [];
+    const removed = activeIds.some((id) => !nextNodes.has(id));
+    for (const [id, entry] of this.nodeElements) if (!nextNodes.has(id)) { entry.group.remove(); this.nodeElements.delete(id); }
+    for (const [id, entry] of this.edgeElements) if (!nextEdges.has(id)) { entry.remove(); this.edgeElements.delete(id); }
+    this.lastGraph = graph;
     const groupsById = new Map(this.arrangement.groups.map((group) => [group.id, group]));
-    for (const [id, entry] of this.groupElements) if (!groupsById.has(id)) { entry.backdrop.remove(); entry.nodes.remove(); this.groupElements.delete(id); }
+    for (const [id, entry] of this.groupElements) if (!groupsById.has(id)) { entry.backdrop.remove(); entry.nodes.remove(); entry.links.remove(); this.groupElements.delete(id); }
     for (const group of this.arrangement.groups) this.renderGroup(graph, group);
 
     setAttribute(this.nodeLayer, "class", drawn.length > 150 ? "semantic-map-nodes semantic-map-dense" : "semantic-map-nodes");
@@ -200,7 +235,8 @@ export class SemanticMapRenderer {
       setAttribute(group, "data-edge-id", item.id); setAttribute(group, "data-edge-key", item.id);
       setAttribute(group, "data-edge-from", item.from); setAttribute(group, "data-edge-to", item.to);
       setAttribute(group, "data-edge-type", item.kind); setAttribute(group, "data-edge-label", item.kind);
-      if (structural || !path.hasAttribute("d")) setAttribute(path, "d", edgePath(from, to, groupsById, from.group === to.group ? lane : lane++));
+      // Phase hand-overs share one bus (lane 0): arrows from one phase merge into a single line per target box.
+      if (structural || !path.hasAttribute("d")) setAttribute(path, "d", edgePath(from, to, groupsById, from.group === to.group || item.kind === "phase" ? 0 : ++lane));
       setAttribute(path, "class", `semantic-map-edge-path relation-${item.kind}${from.group === to.group ? "" : " relation-between-agents"}`);
     }
     this.renderCanvasStats(graph);
@@ -223,7 +259,8 @@ export class SemanticMapRenderer {
       const line = this.stageLayer.children[index];
       if (!(line instanceof SVGTextElement)) return;
       setAttribute(line, "x", String(stage.x)); setAttribute(line, "y", String(stage.y));
-      text(line, stage.label ? `PHASE ${String(index + 1)} · ${stage.label}` : arrangement.stages.length > 1 ? `PHASE ${String(index + 1)}` : "");
+      // Recorded phase number (not the position on this page), so page 2 continues the numbering of page 1.
+      text(line, stage.label !== undefined && stage.phase !== undefined ? `PHASE ${String(stage.phase + 1)} · ${stage.label}` : "");
     });
   }
 
@@ -231,14 +268,23 @@ export class SemanticMapRenderer {
     let entry = this.groupElements.get(group.id);
     if (!entry) {
       const backdrop = svgElement("g"), shape = svgElement("rect"), label = svgElement("text"), scope = svgElement("text"), status = svgElement("text"), stats = svgElement("text"), nodes = svgElement("g");
+      const toggle = svgElement("text"), summary = svgElement("g"), summaryShape = svgElement("path"), summaryLabel = svgElement("text"), summaryDetail = svgElement("text"), summaryIssues = svgElement("text"), links = svgElement("g");
+      toggle.setAttribute("class", "semantic-map-group-toggle"); toggle.setAttribute("text-anchor", "end"); toggle.setAttribute("role", "button"); toggle.setAttribute("tabindex", "0");
+      summary.setAttribute("class", "semantic-map-summary"); summary.setAttribute("role", "button"); summary.setAttribute("tabindex", "0");
+      summaryShape.setAttribute("class", "semantic-map-summary-shape"); summaryShape.setAttribute("d", `M 6 0 H ${String(CARD_WIDTH - 6)} Q ${String(CARD_WIDTH)} 0 ${String(CARD_WIDTH)} 6 V ${String(CARD_HEIGHT - 6)} Q ${String(CARD_WIDTH)} ${String(CARD_HEIGHT)} ${String(CARD_WIDTH - 6)} ${String(CARD_HEIGHT)} H 6 Q 0 ${String(CARD_HEIGHT)} 0 ${String(CARD_HEIGHT - 6)} V 6 Q 0 0 6 0 Z`);
+      summaryLabel.setAttribute("class", "semantic-map-summary-label"); summaryLabel.setAttribute("x", "9"); summaryLabel.setAttribute("y", "17");
+      summaryDetail.setAttribute("class", "semantic-map-summary-detail"); summaryDetail.setAttribute("x", "9"); summaryDetail.setAttribute("y", "31");
+      summaryIssues.setAttribute("class", "semantic-map-summary-issues"); summaryIssues.setAttribute("x", "9"); summaryIssues.setAttribute("y", "44");
+      summary.append(summaryShape, summaryLabel, summaryDetail, summaryIssues);
+      links.setAttribute("class", "semantic-map-summary-links"); this.edgeLayer.append(links);
       backdrop.setAttribute("class", "semantic-map-group-background");
       shape.setAttribute("class", "semantic-map-group-shape"); shape.setAttribute("rx", "10");
       label.setAttribute("class", "semantic-map-group-label"); status.setAttribute("class", "semantic-map-group-status"); status.setAttribute("text-anchor", "end");
       scope.setAttribute("class", "semantic-map-group-scope");
       stats.setAttribute("class", "semantic-map-group-stats"); stats.setAttribute("text-anchor", "end");
       nodes.setAttribute("class", "semantic-map-agent-group"); nodes.setAttribute("role", "group");
-      backdrop.append(shape, label, scope, status, stats); this.groupLayer.append(backdrop); this.nodeLayer.append(nodes);
-      entry = { backdrop, shape, label, scope, status, stats, nodes }; this.groupElements.set(group.id, entry);
+      backdrop.append(shape, label, scope, status, stats); this.groupLayer.append(backdrop); nodes.append(toggle, summary); this.nodeLayer.append(nodes);
+      entry = { backdrop, shape, label, scope, status, stats, nodes, toggle, summary, summaryLabel, summaryDetail, summaryIssues, links }; this.groupElements.set(group.id, entry);
     }
     const primary = graph.nodes.find((node) => node.agentId === group.agentId && node.kind === "agent");
     const label = primary?.label ?? group.label;
@@ -261,6 +307,48 @@ export class SemanticMapRenderer {
     const usage = graph.usage?.agents.find((item) => item.agentId === group.agentId)?.usage;
     setAttribute(entry.stats, "x", String(group.x + group.width - 12)); setAttribute(entry.stats, "y", String(group.y + group.height - 7));
     text(entry.stats, usageText(usage));
+    // Collapsible boxes: header toggle and, while collapsed, one summary card for the folded middle of the sequence.
+    setAttribute(entry.toggle, "data-collapse-toggle", group.agentId ?? "");
+    setAttribute(entry.toggle, "aria-expanded", String(group.collapsible && !group.collapsed));
+    setAttribute(entry.toggle, "x", String(group.x + group.width - 12)); setAttribute(entry.toggle, "y", String(group.y + 37));
+    setAttribute(entry.toggle, "class", group.collapsible ? "semantic-map-group-toggle" : "semantic-map-group-toggle is-hidden");
+    text(entry.toggle, group.collapsible ? group.collapsed ? `▸ show all ${String(group.count)} cards` : "▾ collapse" : "");
+    const at = group.summarySlot;
+    setAttribute(entry.summary, "class", at ? "semantic-map-summary" : "semantic-map-summary is-hidden");
+    setAttribute(entry.summary, "data-collapse-toggle", group.agentId ?? "");
+    setAttribute(entry.summary, "aria-expanded", "false");
+    entry.links.replaceChildren();
+    if (!at || !this.arrangement) return;
+    const folded = members.filter((node) => group.hidden.includes(node.id));
+    const summary = foldedSummary(folded);
+    setAttribute(entry.summary, "transform", `translate(${String(at.x)} ${String(at.y)})`);
+    setAttribute(entry.summary, "aria-label", `${String(folded.length)} folded cards: ${summary.detail}${summary.issues ? `, ${summary.issues}` : ""}. Activate to show all.`);
+    text(entry.summaryLabel, `⋯ ${String(folded.length)} more · show all`);
+    text(entry.summaryDetail, summary.detail);
+    text(entry.summaryIssues, summary.issues);
+    setAttribute(entry.summaryIssues, "class", summary.issues.includes("failed") ? "semantic-map-summary-issues has-failure" : "semantic-map-summary-issues");
+    // Connectors keep the sequence readable through the folded part: previous card → summary → next card.
+    const slots = [...this.slots.values()].filter((slot) => slot.group === group.id);
+    const before = slots.find((slot) => slot.slot === at.slot - 1); const after = slots.find((slot) => slot.slot === at.slot + 1);
+    const groups = new Map(this.arrangement.groups.map((item) => [item.id, item]));
+    for (const [from, to] of [[before, at], [at, after]] as const) {
+      if (!from || !to) continue;
+      const path = svgElement("path"); path.setAttribute("class", "semantic-map-edge-path relation-sequence semantic-map-summary-link"); path.setAttribute("marker-end", "url(#arrowhead)");
+      path.setAttribute("d", edgePath(from, to, groups, 0)); entry.links.append(path);
+    }
+  }
+
+  /** Header toggles and summary cards expand/collapse one box locally; the graph and parent bridge are unaffected. */
+  private toggleFromEvent(event: Event): boolean {
+    const target = event.target;
+    if (!(target instanceof Element)) return false;
+    const toggle = target.closest<SVGElement>("[data-collapse-toggle]");
+    const agentId = toggle?.getAttribute("data-collapse-toggle");
+    if (!toggle || !agentId || toggle.classList.contains("is-hidden")) return false;
+    if (event instanceof KeyboardEvent) event.preventDefault();
+    if (this.expanded.has(agentId)) this.expanded.delete(agentId); else this.expanded.add(agentId);
+    if (this.lastGraph) this.render(this.lastGraph);
+    return true;
   }
 
   private renderNode(item: SemanticNode, activeIds: readonly string[]): void {
@@ -268,14 +356,16 @@ export class SemanticMapRenderer {
     if (!entry) {
       const group = svgElement("g"); group.setAttribute("class", "semantic-map-node"); group.setAttribute("tabindex", "0"); group.setAttribute("role", "button");
       const shape = svgElement("path"); shape.setAttribute("class", "semantic-map-node-shape"); shape.setAttribute("d", shapePath(item.kind));
+      // Grouped tool calls are drawn as a small stack of cards behind the front card.
+      const stack = svgElement("path"); stack.setAttribute("class", "semantic-map-node-stack"); stack.setAttribute("d", shapePath(item.kind)); stack.setAttribute("transform", "translate(5 -5)");
       // Retry presentation on the agent card: inner red frame = a failed attempt, curl arrow back into the card = ×N tries.
       const inner = svgElement("rect"); inner.setAttribute("class", "semantic-map-node-inner"); inner.setAttribute("x", "4"); inner.setAttribute("y", "4"); inner.setAttribute("width", String(CARD_WIDTH - 8)); inner.setAttribute("height", String(CARD_HEIGHT - 8)); inner.setAttribute("rx", "5");
       const loop = svgElement("path"); loop.setAttribute("class", "semantic-map-retry-loop"); loop.setAttribute("d", `M ${String(CARD_WIDTH - 44)} 0 C ${String(CARD_WIDTH - 44)} -24 ${String(CARD_WIDTH + 14)} -26 ${String(CARD_WIDTH)} 12`); loop.setAttribute("marker-end", "url(#arrowhead)");
       const counter = svgElement("text"); counter.setAttribute("class", "semantic-map-retry-count"); counter.setAttribute("x", String(CARD_WIDTH - 6)); counter.setAttribute("y", "-12");
       const label = svgElement("text"); label.setAttribute("class", "semantic-map-node-label"); label.setAttribute("x", String(labelX(item.kind))); label.setAttribute("y", "19");
       const status = svgElement("text"); status.setAttribute("class", "semantic-map-node-status"); status.setAttribute("x", String(labelX(item.kind))); status.setAttribute("y", "35");
-      group.append(shape, inner, loop, label, status, counter);
-      entry = { group, shape, inner, loop, count: counter, label, status }; this.nodeElements.set(item.id, entry);
+      group.append(stack, shape, inner, loop, label, status, counter);
+      entry = { group, stack, shape, inner, loop, count: counter, label, status }; this.nodeElements.set(item.id, entry);
     }
     const at = this.slots.get(item.id);
     if (!at) throw new Error("Semantic node has no stable layout slot");
@@ -293,14 +383,16 @@ export class SemanticMapRenderer {
     setAttribute(entry.group, "data-profile-y", String(at.y));
     const tries = item.kind === "agent" && (item.attempts ?? 1) > 1 ? item.attempts ?? 1 : 0;
     const failed = item.kind === "agent" ? item.failedAttempts ?? 0 : 0;
-    setAttribute(entry.group, "aria-label", `${kindTag(item.kind)} ${item.label}, ${item.rawStatus}${tries ? `, ${String(tries)} attempts` : ""}${failed ? `, ${String(failed)} failed` : ""}`);
+    const calls = item.kind === "tool-call" && (item.count ?? 1) > 1 ? item.count ?? 1 : 0;
+    const failedCalls = calls ? item.failedCount ?? 0 : 0;
+    setAttribute(entry.group, "aria-label", `${kindTag(item.kind)} ${item.label}, ${item.rawStatus}${tries ? `, ${String(tries)} attempts` : ""}${failed ? `, ${String(failed)} failed` : ""}${calls ? `, ${String(calls)} consecutive calls${failedCalls ? `, ${String(failedCalls)} failed` : ""}` : ""}`);
     setAttribute(entry.group, "aria-pressed", activeIds.includes(item.id) ? "true" : "false");
     setAttribute(entry.group, "transform", `translate(${String(at.x)} ${String(at.y)})`);
-    setAttribute(entry.group, "class", `semantic-map-node kind-${kindTag(item.kind)}${item.state === "running" ? " node-running" : ""}${failed ? " node-had-failure" : ""}${tries ? " node-retried" : ""}`);
+    setAttribute(entry.group, "class", `semantic-map-node kind-${kindTag(item.kind)}${item.state === "running" ? " node-running" : ""}${failed ? " node-had-failure" : ""}${tries ? " node-retried" : ""}${calls ? " node-stacked" : ""}${failedCalls ? " node-stack-failure" : ""}`);
     setAttribute(entry.shape, "class", `semantic-map-node-shape state-${item.state}`);
-    text(entry.count, tries ? `x${String(tries)}` : "");
+    text(entry.count, tries ? `x${String(tries)}` : calls ? `×${String(calls)}` : "");
     text(entry.label, item.label.length > 21 ? `${item.label.slice(0, 20)}…` : item.label);
-    text(entry.status, item.kind === "agent" || item.kind === "result" ? item.rawStatus : `${kindTag(item.kind)} · ${item.rawStatus}`);
+    text(entry.status, item.kind === "agent" || item.kind === "result" ? item.rawStatus : calls ? `${String(calls)} calls · ${failedCalls ? `${String(failedCalls)} failed` : item.rawStatus}` : `${kindTag(item.kind)} · ${item.rawStatus}`);
     setAttribute(entry.status, "class", `semantic-map-node-status status-${item.state}`);
   }
 
@@ -309,13 +401,16 @@ export class SemanticMapRenderer {
     if (!this.arrangement) return;
     const agents = graph.nodes.filter((node) => node.kind === "agent");
     const byState = (state: SemanticNode["state"]): number => agents.filter((node) => node.state === state).length;
-    const tools = graph.nodes.filter((node) => node.kind === "tool-call").length;
-    const retries = agents.reduce((sum, node) => sum + Math.max(0, (node.attempts ?? 1) - 1), 0);
-    const total = graph.usage?.total;
+    // Whole-workflow figures come from the parent summary (every recorded agent and call, every page); the drawn
+    // graph is only the fallback for standalone subagents.
+    const summary = graph.summary;
+    const tools = summary?.toolCalls ?? graph.nodes.reduce((sum, node) => sum + (node.kind === "tool-call" ? node.count ?? 1 : 0), 0);
+    const retries = summary?.retries ?? agents.reduce((sum, node) => sum + Math.max(0, (node.attempts ?? 1) - 1), 0);
+    const total = summary?.usage ?? graph.usage?.total;
     const lines = [
       graph.scope.targetKind === "run" ? "WORKFLOW TOTAL" : "SUBAGENT TOTAL",
-      `agents ${String(agents.length)} · running ${String(byState("running"))} · completed ${String(byState("success"))} · failed ${String(byState("failure"))}`,
-      `tool calls ${String(tools)} · retries ${String(retries)}`,
+      summary ? `agents ${String(summary.agents)} · running ${String(summary.running)} · completed ${String(summary.completed)} · failed ${String(summary.failed)}` : `agents ${String(agents.length)} · running ${String(byState("running"))} · completed ${String(byState("success"))} · failed ${String(byState("failure"))}`,
+      `tool calls ${summary?.toolCallsPartial ? "≥" : ""}${String(tools)} · retries ${String(retries)}${summary && summary.pages > 1 ? ` · page ${String(summary.page + 1)}/${String(summary.pages)}` : ""}`,
       total ? `read ${tokens(total.input)} · write ${tokens(total.output)} · cache ${tokens(total.cacheRead)}/${tokens(total.cacheWrite)}` : "tokens n/d",
       total?.cost === undefined ? "" : `cost $${total.cost.toFixed(3)}`
     ].filter(Boolean);
@@ -345,6 +440,7 @@ export class SemanticMapRenderer {
     if (active) this.archify.focus?.clear({ preserveView: true, updateUrl: false });
     this.nodeElements.clear(); this.edgeElements.clear(); this.slots.clear();
     this.groupElements.clear(); this.layout.clear(); this.arrangement = undefined;
+    this.expanded.clear(); this.structureKey = ""; this.lastGraph = undefined;
     this.stageLayer.replaceChildren(); this.groupLayer.replaceChildren(); this.edgeLayer.replaceChildren(); this.nodeLayer.replaceChildren(); this.statsLayer.replaceChildren();
   }
 

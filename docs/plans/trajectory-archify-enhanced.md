@@ -423,6 +423,19 @@ Per «collo di bottiglia»: prima offrire durata/costo e attese osservate. Un cr
 - Download mediato dal parent su gesto dell'utente, senza concedere popup/download arbitrari al child.
 - **Gate:** report aperto offline con mappa e dettagli inclusi, nessuna richiesta di rete; Gantt/Prism/export normale non regrediti. Questa fase chiude la perdita di topologia offline, non H6.
 
+### H8 — Filtri di visualizzazione della Semantic Map (TODO, richiesto dall'owner, non avviato)
+
+Richiesta: poter nascondere o abilitare elementi e funzioni della mappa, per esempio nascondere i nodi `assistant`. Da eseguire dopo l'accettazione della mappa attuale; nessun codice scritto finora.
+
+- **Pannello filtri in stile paper** nella toolbar della mappa (accanto al pager `‹ Agents … ›`), con controlli della UI Trajectory (`--bg-3`, `--line`, serif/mono). Stato per sessione/target, persistito solo localmente (es. `localStorage` del parent), mai inviato al runtime.
+- **Tipi di nodo** attivabili singolarmente: `system`, `user` (prompt e solleciti), `assistant`, `tool`, `result`; card agente sempre visibile. Nascondere un tipo ricollega la sequenza (freccia dal precedente visibile al successivo visibile, stile «salto») e conta i nodi nascosti nel box (`3 assistant nascosti`).
+- **Tool:** filtro per nome (es. solo `edit`, `bash`) e «solo chiamate fallite»; i gruppi `×N` restano coerenti (conteggio filtrato e totale).
+- **Agenti:** filtro per stato (running, failed, completed, queued), per fase e per scope `parallel`; ricerca per label. Interazione con la paginazione: il filtro si applica prima della pagina (le 16 per pagina sono quelle che passano il filtro), il pager mostra «N di M filtrati».
+- **Livelli/funzioni opzionali:** frecce di passaggio tra fasi/ondate, statistiche nei box, totali sul canvas, bagliore neon (utile anche per le prestazioni), box compressi di default sì/no e soglia (oggi 12), etichette di fase.
+- **Preset rapidi:** «Solo agenti» (una card per agente con stato, conteggi e token), «Errori» (solo agenti/chiamate con failure e il loro contesto immediato), «Completo».
+- **Architettura:** i filtri di presentazione restano nel viewer (come espandi/comprimi); quelli che riducono il carico (tipi di evento, agenti) si applicano nella proiezione del parent per mantenere i limiti di payload/nodi. Il bridge continua a non trasportare contenuti; nessuna nuova dipendenza.
+- **Gate:** test unitari su proiezione/layout filtrati (identità stabili, ricollegamento della sequenza, conteggi), test browser su attiva/disattiva e persistenza locale, nessuna regressione di apertura (<200 ms), dei test V0-D e del ciclo apri/chiudi 50 volte; screenshot paper chiaro/scuro con preset «Solo agenti» ed «Errori».
+
 ### Dipendenze
 
 La precedenza è **completamento baseline corrente + prova V0-D consegnata e visionata → conferma passaggio → H0 → H1 → H2 → H4 → H5 → H6 → H7**. W9 (deploy) non è un prerequisito dell'enhanced. **H3 è una proposta eventuale dopo l'audit/H2, non una dipendenza obbligatoria.** Prototipi layout H0 possono usare fixture, ma la prova di recupero deve leggere artefatti/sessioni prodotti dal runtime esistente senza nuova strumentazione. H6 riesegue i gate Windows/Linux anche dopo i cambi enhanced: il verde della baseline non vale automaticamente per il nuovo candidato.

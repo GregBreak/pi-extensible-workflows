@@ -35,6 +35,19 @@ export const LIVE_DEMO_SCRIPT: Readonly<Record<string, readonly Step[]>> = Objec
   synthesizer: [{ tool: "read", args: { path: "src/inventory.js" } }, { tool: "read", args: { path: "README.md" } }, { result: "Plan: add a bounds check to release() and document it in README.", gated: true }],
   reviewer: [{ tool: "ls", args: { path: "src" } }, { tool: "read", args: { path: "src/inventory.js" } }, { result: "Review: the proposed bounds check is safe; no other callers found." }],
   overflow: [{ result: "overflow item done" }],
+  // Mixed-load simulation: many repeated calls (grouped on the map), a failing read, few calls, no calls, retries.
+  heavy: [
+    { tool: "ls", args: { path: "." } }, { tool: "ls", args: { path: "src" } },
+    { tool: "read", args: { path: "README.md" } }, { tool: "read", args: { path: "src/inventory.js" } }, { tool: "read", args: { path: "src/index.js" } }, { tool: "read", args: { path: "README.md" } }, { tool: "read", args: { path: "src/inventory.js" } }, { tool: "read", args: { path: "src/index.js" } },
+    { text: "Six reads done; the policy file is next." },
+    { tool: "read", args: { path: "audit/policy.md" } },
+    { tool: "ls", args: { path: "src" } },
+    { tool: "read", args: { path: "src/inventory.js" } }, { tool: "read", args: { path: "src/index.js" } },
+    { result: "Deep inspection complete: release() lacks a bounds check; policy file missing." }
+  ],
+  medium: [{ tool: "ls", args: { path: "src" } }, { tool: "read", args: { path: "src/inventory.js" } }, { result: "Checked src/inventory.js." }],
+  light: [{ result: "Nothing to inspect; acknowledged." }],
+  flaky: [{ tool: "read", args: { path: "missing/config.json" } }, { text: "The config file does not exist." }, { text: "Still missing; giving up." }],
 });
 /** Expected persisted outcome, used by the automatic test and the walkthrough to compare expected and observed state. */
 export const LIVE_DEMO_EXPECTED = Object.freeze({ agents: 5, phases: ["discover", "synthesize"], toolCalls: 9, failedAgents: ["auditor"], failedToolCalls: 1 });

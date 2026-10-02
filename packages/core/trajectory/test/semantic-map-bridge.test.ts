@@ -82,7 +82,7 @@ void test("Semantic Map parent projection bounds dense metadata and indexes at m
     attemptDetails: Array.from({ length: 8 }, (_, attempt) => ({ attempt: attempt + 1, error: { code: "RETRY" } })),
     output: { status: "pending" }
   }));
-  const calls = Array.from({ length: 100 }, (_, index) => ({ type: "message", message: { role: "assistant", content: [{ type: "toolCall", id: `${"c".repeat(120)}-${String(index).padStart(3, "0")}`, name: "T".repeat(120), arguments: { secret: "not projected" } }] } }));
+  const calls = Array.from({ length: 100 }, (_, index) => ({ type: "message", message: { role: "assistant", content: [{ type: "toolCall", id: `${"c".repeat(120)}-${String(index).padStart(3, "0")}`, name: `${"T".repeat(118)}${String(index % 2)}`, arguments: { secret: "not projected" } }] } }));
   const relations = Array.from({ length: 100 }, (_, index) => ({ kind: "fork" as const, fromAgentId: "agent-000", toAgentId: "agent-001", id: `relation-${String(index)}`, evidence: "recorded" as const }));
   const found = {
     publisher: { id: "pub", generation: 4, connected: true },
@@ -112,4 +112,47 @@ void test("Semantic Map parent projection bounds dense metadata and indexes at m
   assert.ok(new TextEncoder().encode(JSON.stringify(projection.snapshot)).byteLength <= 512 * 1024);
   assert.ok(projection.snapshot.partial?.reasons?.includes("Transcript event projection bounded"));
   assert.ok(projection.snapshot.partial?.reasons?.includes("Recorded relation list bounded"));
+});
+
+void test("repeated tool calls become one stacked card and the inspector keeps every call ID", () => {
+  const call = (id: string, name: string, text = "") => ({ type: "message", message: { role: "assistant", content: [...(text ? [{ type: "text", text }] : []), { type: "toolCall", id, name, arguments: { secret: "x" } }] } });
+  const result = (id: string, isError = false) => ({ type: "message", message: { role: "toolResult", toolCallId: id, isError, content: [] } });
+  const transcript = [
+    { type: "message", message: { role: "user", content: "go" } },
+    call("r1", "read"), result("r1"), call("r2", "read"), result("r2", true), call("r3", "read"), result("r3"),
+    call("l1", "ls", "now list"), result("l1"),
+    call("r4", "read"), result("r4"),
+    { type: "message", message: { role: "assistant", content: [{ type: "text", text: "done" }] } }
+  ];
+  const found = {
+    publisher: { id: "pub", generation: 1, connected: true },
+    target: { kind: "run" as const, publisherId: "pub", id: "run" },
+    record: { run: { id: "run", workflowName: "grouped", state: "completed", agents: [{ id: "agent", name: "A", state: "completed", output: { status: "available" } }] } }
+  };
+  const context = { state: { transcripts: { "pub\trun\tagent": transcript } }, selected: () => found, setView: () => undefined, staticExport: false } as unknown as Parameters<typeof projectCurrentSemanticSnapshot>[0];
+  const projection = projectCurrentSemanticSnapshot(context);
+  assert.ok(projection);
+  const events = projection.snapshot.run?.agents?.[0]?.events ?? [];
+  assert.deepEqual(events.map((event) => [event.kind, event.name, event.count ?? 1, event.failed ?? 0]), [
+    ["user", "Prompt", 1, 0], ["assistant", "Assistant", 1, 0], ["tool", "read", 3, 1], ["assistant", "Assistant", 1, 0], ["tool", "ls", 1, 0], ["assistant", "Assistant", 1, 0], ["tool", "read", 1, 0], ["assistant", "Assistant", 1, 0]
+  ], "tool-only assistant turns between identical calls are folded; model text or another tool breaks the group");
+  const graph = adaptSemanticSnapshot(projection.snapshot);
+  const stacked = graph.nodes.find((node) => node.kind === "tool-call" && node.count === 3);
+  assert.ok(stacked);
+  assert.deepEqual([stacked.label, stacked.failedCount, stacked.sourceRef], ["read", 1, "agent/r1"]);
+  assert.equal(graph.nodes.length, projection.nodeCount, "parent identity index mirrors grouped cards");
+  assert.deepEqual(projection.nodes.get(stacked.id), { id: stacked.id, kind: "tool-call", sourceRef: "agent/r1" }, "the stacked card is addressable by its first call");
+});
+
+void test("more than 16 agents are paged; totals cover every agent on every page", () => {
+  const agents = Array.from({ length: 40 }, (_, index) => ({ id: `a${String(index).padStart(2, "0")}`, name: `agent ${String(index)}`, state: index % 10 === 0 ? "failed" : "completed", attempts: index === 5 ? 3 : 1, toolCalls: [{ id: `c${String(index)}`, name: "read", state: "completed" }], accounting: { input: 10, output: 1, cacheRead: 2, cacheWrite: 0, cost: 0.01 }, output: { status: "available" } }));
+  const found = { publisher: { id: "pub", generation: 1, connected: true }, target: { kind: "run" as const, publisherId: "pub", id: "run" }, record: { run: { id: "run", workflowName: "paged", state: "completed", agents } } };
+  const context = { state: { transcripts: {} }, selected: () => found, setView: () => undefined, staticExport: false } as unknown as Parameters<typeof projectCurrentSemanticSnapshot>[0];
+  const pages = [0, 1, 2, 9].map((page) => projectCurrentSemanticSnapshot(context, page));
+  assert.deepEqual(pages.map((item) => [item?.page, item?.pages, item?.snapshot.run?.agents?.length, item?.snapshot.run?.agents?.[0]?.id]), [[0, 3, 16, "a00"], [1, 3, 16, "a16"], [2, 3, 8, "a32"], [2, 3, 8, "a32"]], "out-of-range pages clamp to the last page");
+  const summary = pages[1]?.snapshot.run?.summary;
+  assert.ok(summary);
+  assert.deepEqual([summary.agents, summary.failed, summary.completed, summary.toolCalls, summary.retries, summary.usage?.input], [40, 4, 36, 40, 2, 400]);
+  for (const item of pages) { assert.ok(item); assert.ok(item.nodes.size <= 500); const graph = adaptSemanticSnapshot(item.snapshot); assert.equal(graph.nodes.length, item.nodeCount); assert.equal(graph.summary?.agents, 40); }
+  assert.ok(pages[1]?.snapshot.partial?.reasons?.includes("Agents 17–32 of 40 (page 2 of 3)"));
 });

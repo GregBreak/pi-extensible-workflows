@@ -10,9 +10,13 @@ export type SemanticNode = { id: string; kind: SemanticNodeKind; label: string; 
   /** Agent cards only: total attempts and how many of them failed (retries are drawn on one card, never as copies). */
   attempts?: number; failedAttempts?: number;
   /** Agent cards only: recorded workflow phase index/name and launch position. */
-  stage?: number; stageLabel?: string; launch?: number };
+  stage?: number; stageLabel?: string; phaseNumber?: number; launch?: number;
+  /** Tool cards only: consecutive calls to the same tool drawn as one stacked card, and how many of them failed. */
+  count?: number; failedCount?: number };
 /** Transcript event kinds only; never message text, prompts, tool arguments or results. */
-export type SemanticEvent = { kind: "system" | "user" | "assistant" | "tool"; id?: string; name?: string; state?: string };
+export type SemanticEvent = { kind: "system" | "user" | "assistant" | "tool"; id?: string; name?: string; state?: string; count?: number; failed?: number };
+/** Whole-workflow figures computed by the parent over every recorded agent, including agents on other map pages. */
+export type SemanticRunSummary = { agents: number; running: number; completed: number; failed: number; toolCalls: number; toolCallsPartial?: boolean; retries: number; page: number; pages: number; usage?: SemanticUsage };
 export type SemanticEdge = { id: string; from: string; to: string; kind: SemanticRelationKind; evidence: "recorded" | "structural" };
 export type SemanticGraph = {
   schemaVersion: 1;
@@ -22,6 +26,7 @@ export type SemanticGraph = {
   completeness: { partial: boolean; reasons: string[]; omittedNodes: number; omittedEdges: number };
   /** Recorded token accounting only; context is the latest recorded assistant turn when its transcript is cached. */
   usage?: { total: SemanticUsage; agents: { agentId: string; usage: SemanticUsage }[] };
+  summary?: SemanticRunSummary;
 };
 export type SemanticUsage = { input: number; output: number; cacheRead: number; cacheWrite: number; context?: number; cost?: number };
 export type SemanticToolCall = { id: string; name: string; state: string };
@@ -35,7 +40,7 @@ export type SemanticAgent = {
 };
 export type SemanticSnapshot = {
   scope: { publisherId: string; targetKind: "run" | "subagent"; targetId: string; agentId?: string };
-  run?: { id: string; workflowName?: string; state: string; retry?: { sourceRunId?: string }; agents?: readonly SemanticAgent[] };
+  run?: { id: string; workflowName?: string; state: string; retry?: { sourceRunId?: string }; agents?: readonly SemanticAgent[]; summary?: SemanticRunSummary };
   subagent?: { id: string; label?: string; state: string; attempts?: number; attemptDetails?: readonly SemanticAttempt[]; output?: SemanticOutput; progress?: { toolCalls?: readonly SemanticToolCall[] }; usage?: SemanticUsage; events?: readonly SemanticEvent[] };
   relations?: readonly { kind: "dependency" | "fork" | "merge"; fromAgentId: string; toAgentId: string; id?: string; evidence: "recorded" }[];
   partial?: { reasons?: readonly string[]; omittedNodes?: number; omittedEdges?: number };
@@ -134,7 +139,11 @@ export function adaptSemanticSnapshot(input: SemanticSnapshot): SemanticGraph {
     // The opening system/user turns and the most recent turns are kept; the middle of very long transcripts is omitted.
     const kept = valid.length > MAX_AGENT_EVENTS ? [...valid.slice(0, 2), ...valid.slice(-(MAX_AGENT_EVENTS - 2))] : valid;
     if (kept.length < events.length) { omittedSourceNodes += events.length - kept.length; addReason(reasons, "Transcript events bounded"); }
-    return kept.map((event) => ({ kind: event.kind, ...(event.kind === "tool" ? { id: boundedId(event.id, "tool call id") } : {}), name: boundedText(event.name, event.kind === "tool" ? "Tool call" : event.kind), state: boundedText(event.state, "completed", 40) }));
+    return kept.map((event) => {
+      const count = event.kind === "tool" ? Math.min(positiveCount(event.count), 100_000) : 0;
+      const failed = Math.min(positiveCount(event.failed), count);
+      return { kind: event.kind, ...(event.kind === "tool" ? { id: boundedId(event.id, "tool call id") } : {}), name: boundedText(event.name, event.kind === "tool" ? "Tool call" : event.kind), state: boundedText(event.state, "completed", 40), ...(count > 1 ? { count, ...(failed ? { failed } : {}) } : {}) };
+    });
   };
   const rawAgents = input.run?.agents ?? [];
   const projected = rawAgents.slice(0, MAX_SOURCE_RECORDS).map((agent) => {
@@ -202,7 +211,7 @@ export function adaptSemanticSnapshot(input: SemanticSnapshot): SemanticGraph {
   const causalOut = new Map<string, string[]>();
   const nodeByKey = new Map<string, string>();
   const sourcePrefix = [scope.publisherId, scope.targetKind, scope.targetId, scope.agentId ?? ""] as const;
-  const node = (kind: SemanticNodeKind, key: readonly (string | number)[], label: string, raw: string, evidence: SemanticNode["evidence"], sourceRef: string, agentId?: string, extra: Partial<Pick<SemanticNode, "order" | "attempts" | "failedAttempts" | "stage" | "stageLabel" | "launch">> = {}): string => {
+  const node = (kind: SemanticNodeKind, key: readonly (string | number)[], label: string, raw: string, evidence: SemanticNode["evidence"], sourceRef: string, agentId?: string, extra: Partial<Pick<SemanticNode, "order" | "attempts" | "failedAttempts" | "stage" | "stageLabel" | "phaseNumber" | "launch" | "count" | "failedCount">> = {}): string => {
     const id = tupleId([...sourcePrefix, kind, ...key]);
     const mapKey = JSON.stringify([kind, ...key]);
     if (!nodeByKey.has(mapKey)) {
@@ -231,10 +240,33 @@ export function adaptSemanticSnapshot(input: SemanticSnapshot): SemanticGraph {
     const failed = seen.filter((item) => item.failed).length;
     return { ...(total > 1 ? { attempts: total } : {}), ...(failed ? { failedAttempts: failed } : {}) };
   };
+  /*
+   * Execution waves from recorded metadata only: with launch order, consecutive launches inside the same parallel scope
+   * (first structural path segment) of the same phase form one parallel wave, and every top-level call is a wave of its
+   * own, so sequential agents follow each other. Without launch order, waves fall back to recorded phases.
+   */
+  const waveOf = new Map<string, number>();
+  const waves: string[][] = [];
+  const withLaunch = agents.length > 0 && agents.every((agent) => agent.launch !== undefined);
+  if (withLaunch) {
+    let previousKey: string | undefined;
+    for (const agent of [...agents].filter((item) => !item.parentId).sort((a, b) => (a.launch ?? 0) - (b.launch ?? 0) || a.id.localeCompare(b.id))) {
+      const scope = agent.path[0];
+      const key = scope === undefined ? undefined : JSON.stringify([agent.phaseIndex ?? -1, scope]);
+      if (key === undefined || key !== previousKey) waves.push([]);
+      waves[waves.length - 1]?.push(agent.id); waveOf.set(agent.id, waves.length - 1);
+      previousKey = key;
+    }
+  } else {
+    const phases = [...new Set(agents.flatMap((agent) => agent.phaseIndex === undefined || agent.parentId ? [] : [agent.phaseIndex]))].sort((a, b) => a - b);
+    for (const phase of phases) { waves.push(agents.filter((agent) => agent.phaseIndex === phase && !agent.parentId).map((agent) => agent.id).sort()); for (const id of waves[waves.length - 1] ?? []) waveOf.set(id, waves.length - 1); }
+  }
   for (const agent of agents) {
+    const wave = waveOf.get(agent.id);
     const id = node("agent", [agent.id], agent.name, agent.state, "recorded", agent.id, agent.id, {
       ...attemptFields(agent.attempts, agent.attemptsSeen),
-      ...(agent.phaseIndex === undefined ? {} : { stage: agent.phaseIndex, stageLabel: agent.phase }),
+      ...(wave === undefined ? agent.phaseIndex === undefined ? {} : { stage: agent.phaseIndex } : { stage: wave }),
+      ...(agent.phaseIndex === undefined ? {} : { phaseNumber: agent.phaseIndex, ...(agent.phase === undefined ? {} : { stageLabel: agent.phase }) }),
       ...(agent.launch === undefined ? {} : { launch: agent.launch })
     });
     agentBySource.set(agent.id, { agent, id });
@@ -248,7 +280,7 @@ export function adaptSemanticSnapshot(input: SemanticSnapshot): SemanticGraph {
         const ordinal = ordinals.get(event.kind) ?? 0; ordinals.set(event.kind, ordinal + 1);
         const callKey = event.id ?? String(index);
         const current = event.kind === "tool"
-          ? node("tool-call", [owner, attempts || 1, callKey], event.name ?? "Tool call", event.state ?? "completed", "recorded", `${owner}/${callKey}`, owner, { order: index + 1 })
+          ? node("tool-call", [owner, attempts || 1, callKey], event.name ?? "Tool call", event.state ?? "completed", "recorded", `${owner}/${callKey}`, owner, { order: index + 1, ...(event.count ? { count: event.count } : {}), ...(event.failed ? { failedCount: event.failed } : {}) })
           : node(event.kind, [owner, "event", index], event.name ?? event.kind, event.state ?? "completed", "recorded", `${owner}#${event.kind}#${String(ordinal)}`, owner, { order: index + 1 });
         edge(event.kind === "tool" && previousKind === "assistant" ? "invokes" : "sequence", previous, current, [owner, "flow", index], "recorded");
         previous = current; previousKind = event.kind;
@@ -293,17 +325,14 @@ export function adaptSemanticSnapshot(input: SemanticSnapshot): SemanticGraph {
 
     if (agent.attempts > agent.attemptsSeen.length && agent.attempts > 1) addReason(reasons, "Attempt history partial");
     const resultStatus = agent.output === "missing" ? "unavailable" : agent.output;
-    const resultState = resultStatus === "failed" ? "failed" : resultStatus === "cancelled" ? "cancelled" : resultStatus === "pending" ? "running" : resultStatus === "available" && stateOf(agent.state).state === "success" ? "completed" : "unknown";
+    const resultState = resultStatus === "failed" ? "failed" : resultStatus === "cancelled" ? "cancelled" : resultStatus === "pending" ? "running" : resultStatus === "available" ? "completed" : "unknown";
     const resultId = node("result", [agent.id, "output"], resultStatus === "missing" ? "Result unavailable" : `Result ${resultStatus}`, resultState, resultStatus === "missing" ? "unavailable" : "recorded", agent.id, agent.id, { order: 100_000 });
     agentFlow(id, agent.id, agent.attempts, agent.events, agent.tools, resultId);
   }
-  // Recorded workflow phases: every agent of one phase hands over to the agents of the next recorded phase.
-  const stages = new Map<number, string[]>();
-  for (const { agent } of agentBySource.values()) if (agent.phaseIndex !== undefined && !agent.parentId) { const list = stages.get(agent.phaseIndex) ?? []; list.push(agent.id); stages.set(agent.phaseIndex, list); }
-  const stageOrder = [...stages.keys()].sort((a, b) => a - b);
+  // Hand-over between consecutive waves: every agent of one wave to every agent of the next (fan-out / fan-in).
   let phaseEdges = 0;
-  for (let index = 1; index < stageOrder.length; index += 1) {
-    const before = stages.get(stageOrder[index - 1] ?? -1) ?? []; const after = stages.get(stageOrder[index] ?? -1) ?? [];
+  for (let index = 1; index < waves.length; index += 1) {
+    const before = waves[index - 1] ?? []; const after = waves[index] ?? [];
     for (const from of [...before].sort()) for (const to of [...after].sort()) {
       const resultId = nodeByKey.get(JSON.stringify(["result", from, "output"])); const target = agentBySource.get(to)?.id;
       if (!resultId || !target) continue;
@@ -324,7 +353,7 @@ export function adaptSemanticSnapshot(input: SemanticSnapshot): SemanticGraph {
     const id = node("agent", [standalone.id], standalone.label, standalone.state, "recorded", standalone.id, standalone.id, attemptFields(standalone.attempts, standalone.attemptsSeen));
     edge("contains", rootId, id, ["subagent", standalone.id], "structural");
     const resultStatus = standalone.output;
-    const resultState = resultStatus === "failed" ? "failed" : resultStatus === "cancelled" ? "cancelled" : resultStatus === "pending" ? "running" : resultStatus === "available" && stateOf(standalone.state).state === "success" ? "completed" : "unknown";
+    const resultState = resultStatus === "failed" ? "failed" : resultStatus === "cancelled" ? "cancelled" : resultStatus === "pending" ? "running" : resultStatus === "available" ? "completed" : "unknown";
     const resultId = node("result", [standalone.id, "output"], resultStatus === "missing" ? "Result unavailable" : `Result ${resultStatus}`, resultState, resultStatus === "missing" ? "unavailable" : "recorded", standalone.id, standalone.id, { order: 100_000 });
     if (standalone.attempts > standalone.attemptsSeen.length && standalone.attempts > 1) addReason(reasons, "Attempt history partial");
     agentFlow(id, standalone.id, standalone.attempts, standalone.events, standalone.tools, resultId);
@@ -373,6 +402,15 @@ export function adaptSemanticSnapshot(input: SemanticSnapshot): SemanticGraph {
     const total: SemanticUsage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
     for (const { usage } of usageEntries) { total.input += usage.input; total.output += usage.output; total.cacheRead += usage.cacheRead; total.cacheWrite += usage.cacheWrite; if (usage.cost !== undefined) total.cost = (total.cost ?? 0) + usage.cost; }
     graph.usage = { total, agents: usageEntries };
+  }
+  const summary = input.run?.summary;
+  if (summary && scope.targetKind === "run") {
+    const pages = Math.max(1, positiveCount(summary.pages));
+    graph.summary = {
+      agents: positiveCount(summary.agents), running: positiveCount(summary.running), completed: positiveCount(summary.completed), failed: positiveCount(summary.failed),
+      toolCalls: positiveCount(summary.toolCalls), ...(summary.toolCallsPartial === true ? { toolCallsPartial: true } : {}), retries: positiveCount(summary.retries), page: Math.min(positiveCount(summary.page), pages - 1), pages,
+      ...(summary.usage ? { usage: usageOf(summary.usage) ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } } : {})
+    };
   }
   if (bytes(graph) > SEMANTIC_MAP_LIMITS.payloadBytes) {
     const initialEdges = graph.edges.length;
