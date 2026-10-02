@@ -1,9 +1,18 @@
 import { SEMANTIC_MAP_LIMITS } from "../semantic-map-build.js";
 
-export type SemanticNodeKind = "workflow" | "task" | "agent" | "tool-call" | "result";
-export type SemanticRelationKind = "contains" | "invokes" | "produces" | "dependency" | "fork" | "merge" | "retry";
+export type SemanticNodeKind = "workflow" | "task" | "agent" | "system" | "user" | "assistant" | "tool-call" | "result";
+/** `sequence`: recorded transcript order inside one agent; `phase`: agents of one recorded workflow phase precede the next phase. */
+export type SemanticRelationKind = "contains" | "invokes" | "produces" | "sequence" | "phase" | "dependency" | "fork" | "merge" | "retry";
 export type SemanticState = "running" | "success" | "failure" | "queued" | "waiting" | "paused" | "retrying" | "cancelled" | "interrupted" | "unknown";
-export type SemanticNode = { id: string; kind: SemanticNodeKind; label: string; state: SemanticState; rawStatus: string; evidence: "recorded" | "structural" | "unavailable"; sourceRef: string };
+export type SemanticNode = { id: string; kind: SemanticNodeKind; label: string; state: SemanticState; rawStatus: string; evidence: "recorded" | "structural" | "unavailable"; sourceRef: string; agentId?: string; attempt?: number;
+  /** Transcript position inside the agent box (events and tool calls). */
+  order?: number;
+  /** Agent cards only: total attempts and how many of them failed (retries are drawn on one card, never as copies). */
+  attempts?: number; failedAttempts?: number;
+  /** Agent cards only: recorded workflow phase index/name and launch position. */
+  stage?: number; stageLabel?: string; launch?: number };
+/** Transcript event kinds only; never message text, prompts, tool arguments or results. */
+export type SemanticEvent = { kind: "system" | "user" | "assistant" | "tool"; id?: string; name?: string; state?: string };
 export type SemanticEdge = { id: string; from: string; to: string; kind: SemanticRelationKind; evidence: "recorded" | "structural" };
 export type SemanticGraph = {
   schemaVersion: 1;
@@ -11,19 +20,23 @@ export type SemanticGraph = {
   nodes: SemanticNode[];
   edges: SemanticEdge[];
   completeness: { partial: boolean; reasons: string[]; omittedNodes: number; omittedEdges: number };
+  /** Recorded token accounting only; context is the latest recorded assistant turn when its transcript is cached. */
+  usage?: { total: SemanticUsage; agents: { agentId: string; usage: SemanticUsage }[] };
 };
+export type SemanticUsage = { input: number; output: number; cacheRead: number; cacheWrite: number; context?: number; cost?: number };
 export type SemanticToolCall = { id: string; name: string; state: string };
 export type SemanticAttempt = { attempt: number; error?: { code?: string } };
 export type SemanticOutput = { status: string };
 export type SemanticAgent = {
   id: string; name?: string; label?: string; state: string; parentId?: string;
   structuralPath?: readonly string[]; attempts?: number; attemptDetails?: readonly SemanticAttempt[];
-  toolCalls?: readonly SemanticToolCall[]; output?: SemanticOutput;
+  toolCalls?: readonly SemanticToolCall[]; output?: SemanticOutput; usage?: SemanticUsage;
+  events?: readonly SemanticEvent[]; phase?: string; phaseIndex?: number; launch?: number;
 };
 export type SemanticSnapshot = {
   scope: { publisherId: string; targetKind: "run" | "subagent"; targetId: string; agentId?: string };
   run?: { id: string; workflowName?: string; state: string; retry?: { sourceRunId?: string }; agents?: readonly SemanticAgent[] };
-  subagent?: { id: string; label?: string; state: string; attempts?: number; attemptDetails?: readonly SemanticAttempt[]; output?: SemanticOutput; progress?: { toolCalls?: readonly SemanticToolCall[] } };
+  subagent?: { id: string; label?: string; state: string; attempts?: number; attemptDetails?: readonly SemanticAttempt[]; output?: SemanticOutput; progress?: { toolCalls?: readonly SemanticToolCall[] }; usage?: SemanticUsage; events?: readonly SemanticEvent[] };
   relations?: readonly { kind: "dependency" | "fork" | "merge"; fromAgentId: string; toAgentId: string; id?: string; evidence: "recorded" }[];
   partial?: { reasons?: readonly string[]; omittedNodes?: number; omittedEdges?: number };
 };
@@ -32,6 +45,9 @@ const MAX_SOURCE_RECORDS = 2048;
 const MAX_TOOL_CALLS = 512;
 const MAX_ID_LENGTH = 128;
 const MAX_LABEL_LENGTH = 120;
+const MAX_AGENT_EVENTS = 48;
+const MAX_PHASE_EDGES = 32;
+const EVENT_KINDS = new Set(["system", "user", "assistant", "tool"]);
 const encoder = new TextEncoder();
 const allowedStates = new Set<SemanticState>(["running", "success", "failure", "queued", "waiting", "paused", "retrying", "cancelled", "interrupted", "unknown"]);
 
@@ -50,6 +66,13 @@ function targetKindOf(value: unknown): "run" | "subagent" {
 }
 function bytes(value: unknown): number { return encoder.encode(JSON.stringify(value)).byteLength; }
 function positiveCount(value: unknown): number { return Number.isSafeInteger(value) && typeof value === "number" && value > 0 ? value : 0; }
+function tokenCount(value: unknown): number { return typeof value === "number" && Number.isFinite(value) && value > 0 ? Math.min(Math.round(value), Number.MAX_SAFE_INTEGER) : 0; }
+function usageOf(value: SemanticUsage | undefined): SemanticUsage | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const context = value.context === undefined ? undefined : tokenCount(value.context);
+  const cost = typeof value.cost === "number" && Number.isFinite(value.cost) && value.cost >= 0 ? value.cost : undefined;
+  return { input: tokenCount(value.input), output: tokenCount(value.output), cacheRead: tokenCount(value.cacheRead), cacheWrite: tokenCount(value.cacheWrite), ...(context === undefined ? {} : { context }), ...(cost === undefined ? {} : { cost }) };
+}
 function tupleId(parts: readonly (string | number)[]): string {
   const raw = JSON.stringify(parts);
   let hex = "";
@@ -61,12 +84,14 @@ function stateOf(rawValue: unknown): { state: SemanticState; rawStatus: string }
   const mapped: Record<string, SemanticState> = {
     running: "running", completed: "success", success: "success", failed: "failure", failure: "failure",
     queued: "queued", waiting: "waiting", paused: "paused", retrying: "retrying", stopped: "cancelled",
-    cancelled: "cancelled", interrupted: "interrupted", budget_exhausted: "failure"
+    cancelled: "cancelled", interrupted: "interrupted", budget_exhausted: "failure", retried: "retrying"
   };
   return { state: mapped[rawStatus] ?? (allowedStates.has(rawStatus as SemanticState) ? rawStatus as SemanticState : "unknown"), rawStatus };
 }
 function addReason(reasons: Set<string>, reason: string): void { reasons.add(reason); }
-function hasPath(from: string, to: string, edges: readonly SemanticEdge[]): boolean {
+const CAUSAL_KINDS: ReadonlySet<SemanticRelationKind> = new Set(["dependency", "fork", "merge", "retry"]);
+/** Reachability over the causal adjacency index (dependency/fork/merge/retry edges only). */
+function hasPath(from: string, to: string, causalOut: ReadonlyMap<string, readonly string[]>): boolean {
   const seen = new Set<string>();
   const queue = [from];
   while (queue.length) {
@@ -74,7 +99,7 @@ function hasPath(from: string, to: string, edges: readonly SemanticEdge[]): bool
     if (current === to) return true;
     if (!current || seen.has(current)) continue;
     seen.add(current);
-    for (const edge of edges) if (edge.from === current && ["dependency", "fork", "merge", "retry"].includes(edge.kind)) queue.push(edge.to);
+    for (const next of causalOut.get(current) ?? []) queue.push(next);
   }
   return false;
 }
@@ -103,6 +128,14 @@ export function adaptSemanticSnapshot(input: SemanticSnapshot): SemanticGraph {
     const retained = unique.slice(0, MAX_TOOL_CALLS);
     return { calls: retained, omitted: Math.max(0, calls.length - retained.length) };
   };
+  const projectEvents = (events: readonly SemanticEvent[] | undefined): SemanticEvent[] | undefined => {
+    if (!events) return undefined;
+    const valid = events.slice(0, MAX_SOURCE_RECORDS).filter((event) => EVENT_KINDS.has(event.kind) && (event.kind !== "tool" || typeof event.id === "string"));
+    // The opening system/user turns and the most recent turns are kept; the middle of very long transcripts is omitted.
+    const kept = valid.length > MAX_AGENT_EVENTS ? [...valid.slice(0, 2), ...valid.slice(-(MAX_AGENT_EVENTS - 2))] : valid;
+    if (kept.length < events.length) { omittedSourceNodes += events.length - kept.length; addReason(reasons, "Transcript events bounded"); }
+    return kept.map((event) => ({ kind: event.kind, ...(event.kind === "tool" ? { id: boundedId(event.id, "tool call id") } : {}), name: boundedText(event.name, event.kind === "tool" ? "Tool call" : event.kind), state: boundedText(event.state, "completed", 40) }));
+  };
   const rawAgents = input.run?.agents ?? [];
   const projected = rawAgents.slice(0, MAX_SOURCE_RECORDS).map((agent) => {
     const tools = projectCalls(agent.toolCalls ?? []);
@@ -120,7 +153,9 @@ export function adaptSemanticSnapshot(input: SemanticSnapshot): SemanticGraph {
       attempts: Number.isSafeInteger(agent.attempts) && (agent.attempts ?? 0) > 0 ? agent.attempts as number : 0,
       attemptsSeen: attempts.filter((attempt, index) => index === 0 || attempts[index - 1]?.attempt !== attempt.attempt),
       output: agent.output ? boundedText(agent.output.status, "unknown", 40) : "missing",
-      tools: tools.calls, toolsOmitted: tools.omitted
+      tools: tools.calls, toolsOmitted: tools.omitted, usage: usageOf(agent.usage), events: projectEvents(agent.events),
+      ...(Number.isSafeInteger(agent.phaseIndex) && (agent.phaseIndex ?? -1) >= 0 ? { phaseIndex: agent.phaseIndex as number, phase: boundedText(agent.phase, "phase", 80) } : {}),
+      ...(Number.isSafeInteger(agent.launch) && (agent.launch ?? -1) >= 0 ? { launch: agent.launch as number } : {})
     };
   }).sort((a, b) => a.id.localeCompare(b.id) || JSON.stringify(a).localeCompare(JSON.stringify(b)));
   const agents: typeof projected = [];
@@ -146,7 +181,7 @@ export function adaptSemanticSnapshot(input: SemanticSnapshot): SemanticGraph {
       id: boundedId(rawStandalone.id, "subagent id"), label: boundedText(rawStandalone.label, "Subagent"), state: boundedText(rawStandalone.state, "unknown", 40),
       attempts: Number.isSafeInteger(rawStandalone.attempts) && (rawStandalone.attempts ?? 0) > 0 ? rawStandalone.attempts as number : 0,
       attemptsSeen: standaloneAttempts.filter((attempt, index) => index === 0 || standaloneAttempts[index - 1]?.attempt !== attempt.attempt),
-      output: boundedText(rawStandalone.output?.status, "missing", 40), tools: standaloneTools.calls
+      output: boundedText(rawStandalone.output?.status, "missing", 40), tools: standaloneTools.calls, events: projectEvents(rawStandalone.events)
     } : undefined
   };
   while (bytes(safeSnapshot) > SEMANTIC_MAP_LIMITS.payloadBytes && (agents.length || (safeSnapshot.subagent?.tools.length ?? 0) > 0)) {
@@ -162,21 +197,28 @@ export function adaptSemanticSnapshot(input: SemanticSnapshot): SemanticGraph {
 
   const nodes: SemanticNode[] = [];
   const edges: SemanticEdge[] = [];
+  // Indexes over `edges` (append-only while building): duplicate keys and causal adjacency for cycle checks.
+  const edgeKeys = new Set<string>();
+  const causalOut = new Map<string, string[]>();
   const nodeByKey = new Map<string, string>();
   const sourcePrefix = [scope.publisherId, scope.targetKind, scope.targetId, scope.agentId ?? ""] as const;
-  const node = (kind: SemanticNodeKind, key: readonly (string | number)[], label: string, raw: string, evidence: SemanticNode["evidence"], sourceRef: string): string => {
+  const node = (kind: SemanticNodeKind, key: readonly (string | number)[], label: string, raw: string, evidence: SemanticNode["evidence"], sourceRef: string, agentId?: string, extra: Partial<Pick<SemanticNode, "order" | "attempts" | "failedAttempts" | "stage" | "stageLabel" | "launch">> = {}): string => {
     const id = tupleId([...sourcePrefix, kind, ...key]);
     const mapKey = JSON.stringify([kind, ...key]);
     if (!nodeByKey.has(mapKey)) {
       const status = stateOf(raw);
-      nodes.push({ id, kind, label: boundedText(label, kind), ...status, evidence, sourceRef: boundedText(sourceRef, "unavailable", 256) });
+      nodes.push({ id, kind, label: boundedText(label, kind), ...status, evidence, sourceRef: boundedText(sourceRef, "unavailable", 256), ...(agentId === undefined ? {} : { agentId }), ...extra });
       nodeByKey.set(mapKey, id);
     }
     return id;
   };
   const edge = (kind: SemanticRelationKind, from: string, to: string, relationKey: readonly (string | number)[], evidence: SemanticEdge["evidence"]): void => {
-    if (from === to || edges.some((item) => item.from === from && item.to === to && item.kind === kind)) return;
-    if (["dependency", "fork", "merge", "retry"].includes(kind) && hasPath(to, from, edges)) { addReason(reasons, "Cyclic causal relation omitted"); omittedSourceEdges += 1; return; }
+    const key = `${kind}\u0000${from}\u0000${to}`;
+    if (from === to || edgeKeys.has(key)) return;
+    const causal = CAUSAL_KINDS.has(kind);
+    if (causal && hasPath(to, from, causalOut)) { addReason(reasons, "Cyclic causal relation omitted"); omittedSourceEdges += 1; return; }
+    edgeKeys.add(key);
+    if (causal) { const out = causalOut.get(from); if (out) out.push(to); else causalOut.set(from, [to]); }
     edges.push({ id: tupleId([...sourcePrefix, "edge", kind, ...relationKey, from, to]), from, to, kind, evidence });
   };
   const rootId = scope.targetKind === "run"
@@ -184,10 +226,42 @@ export function adaptSemanticSnapshot(input: SemanticSnapshot): SemanticGraph {
     : node("workflow", [input.subagent?.id ?? scope.targetId], "Standalone subagent", input.subagent?.state ?? "unknown", "structural", input.subagent?.id ?? scope.targetId);
   const agentBySource = new Map<string, { agent: typeof agents[number]; id: string }>();
 
+  const attemptFields = (attempts: number, seen: readonly { attempt: number; failed: boolean }[]): Partial<Pick<SemanticNode, "attempts" | "failedAttempts">> => {
+    const total = Math.max(attempts, ...seen.map((item) => item.attempt), 1);
+    const failed = seen.filter((item) => item.failed).length;
+    return { ...(total > 1 ? { attempts: total } : {}), ...(failed ? { failedAttempts: failed } : {}) };
+  };
   for (const agent of agents) {
-    const id = node("agent", [agent.id], agent.name, agent.state, "recorded", agent.id);
+    const id = node("agent", [agent.id], agent.name, agent.state, "recorded", agent.id, agent.id, {
+      ...attemptFields(agent.attempts, agent.attemptsSeen),
+      ...(agent.phaseIndex === undefined ? {} : { stage: agent.phaseIndex, stageLabel: agent.phase }),
+      ...(agent.launch === undefined ? {} : { launch: agent.launch })
+    });
     agentBySource.set(agent.id, { agent, id });
   }
+  /** Agent card → transcript events in recorded order → result; without a transcript, agent → tool calls and result. */
+  const agentFlow = (ownerId: string, owner: string, attempts: number, events: readonly SemanticEvent[] | undefined, tools: readonly { id: string; name: string; state: string }[], resultId: string): void => {
+    if (events?.length) {
+      let previous = ownerId; let previousKind = "agent";
+      const ordinals = new Map<string, number>();
+      events.forEach((event, index) => {
+        const ordinal = ordinals.get(event.kind) ?? 0; ordinals.set(event.kind, ordinal + 1);
+        const callKey = event.id ?? String(index);
+        const current = event.kind === "tool"
+          ? node("tool-call", [owner, attempts || 1, callKey], event.name ?? "Tool call", event.state ?? "completed", "recorded", `${owner}/${callKey}`, owner, { order: index + 1 })
+          : node(event.kind, [owner, "event", index], event.name ?? event.kind, event.state ?? "completed", "recorded", `${owner}#${event.kind}#${String(ordinal)}`, owner, { order: index + 1 });
+        edge(event.kind === "tool" && previousKind === "assistant" ? "invokes" : "sequence", previous, current, [owner, "flow", index], "recorded");
+        previous = current; previousKind = event.kind;
+      });
+      edge("produces", previous, resultId, [owner, "result"], "recorded");
+      return;
+    }
+    edge("produces", ownerId, resultId, [owner, "result"], "recorded");
+    tools.forEach((call, index) => {
+      const callId = node("tool-call", [owner, attempts || 1, call.id], call.name, call.state, "recorded", `${owner}/${call.id}`, owner, { order: index + 1 });
+      edge("invokes", ownerId, callId, [owner, call.id], "recorded");
+    });
+  };
   const parentWouldCycle = (childId: string, parentId: string): boolean => {
     const seen = new Set<string>([childId]);
     let current: string | undefined = parentId;
@@ -198,12 +272,15 @@ export function adaptSemanticSnapshot(input: SemanticSnapshot): SemanticGraph {
     }
     return false;
   };
+  const taskStates = new Map<string, SemanticState[]>();
   for (const { agent, id } of agentBySource.values()) {
     let parent = rootId;
     let pathKey: string[] = [];
+    const agentState = stateOf(agent.state).state;
     for (const segment of agent.path) {
       pathKey = [...pathKey, segment];
       const taskId = node("task", pathKey, segment, "unknown", "structural", agent.id);
+      const contained = taskStates.get(taskId); if (contained) contained.push(agentState); else taskStates.set(taskId, [agentState]);
       edge("contains", parent, taskId, ["task", ...pathKey], "structural");
       parent = taskId;
     }
@@ -214,57 +291,43 @@ export function adaptSemanticSnapshot(input: SemanticSnapshot): SemanticGraph {
       else edge("contains", parentAgent.id, id, ["parent", agent.parentId, agent.id], "recorded");
     } else edge("contains", parent, id, ["agent", agent.id], agent.path.length ? "structural" : "recorded");
 
-    const attempts = [...new Set(agent.attemptsSeen.map((attempt) => attempt.attempt))].sort((a, b) => a - b);
-    for (const attempt of attempts) {
-      const record = agent.attemptsSeen.find((item) => item.attempt === attempt);
-      const attemptId = node("agent", [agent.id, "attempt", attempt], `${agent.name} · attempt ${String(attempt)}`, record?.failed ? "failed" : "unknown", "recorded", agent.id);
-      edge("contains", id, attemptId, ["attempt", agent.id, attempt], "structural");
-    }
-    if (attempts.length > 1) for (let index = 1; index < attempts.length; index += 1) {
-      const previous = attempts[index - 1]; const current = attempts[index];
-      if (previous !== undefined && current !== undefined && current > previous) {
-        const before = nodeByKey.get(JSON.stringify(["agent", agent.id, "attempt", previous]));
-        const after = nodeByKey.get(JSON.stringify(["agent", agent.id, "attempt", current]));
-        if (before && after) edge("retry", before, after, [agent.id, previous, current], "recorded");
-      }
-    }
-    if (agent.attempts > attempts.length && agent.attempts > 1) addReason(reasons, "Attempt history partial");
+    if (agent.attempts > agent.attemptsSeen.length && agent.attempts > 1) addReason(reasons, "Attempt history partial");
     const resultStatus = agent.output === "missing" ? "unavailable" : agent.output;
     const resultState = resultStatus === "failed" ? "failed" : resultStatus === "cancelled" ? "cancelled" : resultStatus === "pending" ? "running" : resultStatus === "available" && stateOf(agent.state).state === "success" ? "completed" : "unknown";
-    const resultId = node("result", [agent.id, "output"], resultStatus === "missing" ? "Result unavailable" : `Result ${resultStatus}`, resultState, resultStatus === "missing" ? "unavailable" : "recorded", agent.id);
-    edge("produces", id, resultId, [agent.id, "result"], "recorded");
-    for (const call of agent.tools) {
-      const callId = node("tool-call", [agent.id, agent.attempts || 1, call.id], call.name, call.state, "recorded", `${agent.id}/${call.id}`);
-      edge("invokes", id, callId, [agent.id, call.id], "recorded");
+    const resultId = node("result", [agent.id, "output"], resultStatus === "missing" ? "Result unavailable" : `Result ${resultStatus}`, resultState, resultStatus === "missing" ? "unavailable" : "recorded", agent.id, agent.id, { order: 100_000 });
+    agentFlow(id, agent.id, agent.attempts, agent.events, agent.tools, resultId);
+  }
+  // Recorded workflow phases: every agent of one phase hands over to the agents of the next recorded phase.
+  const stages = new Map<number, string[]>();
+  for (const { agent } of agentBySource.values()) if (agent.phaseIndex !== undefined && !agent.parentId) { const list = stages.get(agent.phaseIndex) ?? []; list.push(agent.id); stages.set(agent.phaseIndex, list); }
+  const stageOrder = [...stages.keys()].sort((a, b) => a - b);
+  let phaseEdges = 0;
+  for (let index = 1; index < stageOrder.length; index += 1) {
+    const before = stages.get(stageOrder[index - 1] ?? -1) ?? []; const after = stages.get(stageOrder[index] ?? -1) ?? [];
+    for (const from of [...before].sort()) for (const to of [...after].sort()) {
+      const resultId = nodeByKey.get(JSON.stringify(["result", from, "output"])); const target = agentBySource.get(to)?.id;
+      if (!resultId || !target) continue;
+      if (phaseEdges >= MAX_PHASE_EDGES) { omittedSourceEdges += 1; addReason(reasons, "Phase hand-over edges bounded"); continue; }
+      edge("phase", resultId, target, [from, to], "structural"); phaseEdges += 1;
     }
+  }
+  // Workflow scopes (parallel/phase tasks) have no recorded status; derive it from the agents they contain.
+  if (taskStates.size) for (const item of nodes) {
+    const contained = item.kind === "task" ? taskStates.get(item.id) : undefined;
+    if (!contained) continue;
+    const has = (...states: SemanticState[]): boolean => contained.some((state) => states.includes(state));
+    const rawStatus = has("running", "retrying") ? "running" : has("failure", "interrupted") ? "failed" : contained.every((state) => state === "success") ? "completed" : has("queued", "waiting", "paused") ? "queued" : has("cancelled") ? "cancelled" : "mixed";
+    item.rawStatus = rawStatus; item.state = stateOf(rawStatus).state;
   }
   const standalone = safeSnapshot.subagent;
   if (standalone && scope.targetKind === "subagent") {
-    const id = node("agent", [standalone.id], standalone.label, standalone.state, "recorded", standalone.id);
+    const id = node("agent", [standalone.id], standalone.label, standalone.state, "recorded", standalone.id, standalone.id, attemptFields(standalone.attempts, standalone.attemptsSeen));
     edge("contains", rootId, id, ["subagent", standalone.id], "structural");
     const resultStatus = standalone.output;
     const resultState = resultStatus === "failed" ? "failed" : resultStatus === "cancelled" ? "cancelled" : resultStatus === "pending" ? "running" : resultStatus === "available" && stateOf(standalone.state).state === "success" ? "completed" : "unknown";
-    const resultId = node("result", [standalone.id, "output"], resultStatus === "missing" ? "Result unavailable" : `Result ${resultStatus}`, resultState, resultStatus === "missing" ? "unavailable" : "recorded", standalone.id);
-    edge("produces", id, resultId, [standalone.id, "result"], "recorded");
-    const attempts = [...new Set(standalone.attemptsSeen.map((attempt) => attempt.attempt))].sort((a, b) => a - b);
-    for (const attempt of attempts) {
-      const record = standalone.attemptsSeen.find((item) => item.attempt === attempt);
-      const attemptId = node("agent", [standalone.id, "attempt", attempt], `${standalone.label} · attempt ${String(attempt)}`, record?.failed ? "failed" : "unknown", "recorded", standalone.id);
-      edge("contains", id, attemptId, ["attempt", standalone.id, attempt], "structural");
-    }
-    for (let index = 1; index < attempts.length; index += 1) {
-      const previous = attempts[index - 1]; const current = attempts[index];
-      if (previous !== undefined && current !== undefined && current > previous) {
-        const before = nodeByKey.get(JSON.stringify(["agent", standalone.id, "attempt", previous]));
-        const after = nodeByKey.get(JSON.stringify(["agent", standalone.id, "attempt", current]));
-        if (before && after) edge("retry", before, after, [standalone.id, previous, current], "recorded");
-      }
-    }
-    if (standalone.attempts > attempts.length && standalone.attempts > 1) addReason(reasons, "Attempt history partial");
-    for (const call of standalone.tools) {
-      const callId = node("tool-call", [standalone.id, standalone.attempts, call.id], call.name, call.state, "recorded", `${standalone.id}/${call.id}`);
-      edge("invokes", id, callId, [standalone.id, call.id], "recorded");
-    }
+    const resultId = node("result", [standalone.id, "output"], resultStatus === "missing" ? "Result unavailable" : `Result ${resultStatus}`, resultState, resultStatus === "missing" ? "unavailable" : "recorded", standalone.id, standalone.id, { order: 100_000 });
+    if (standalone.attempts > standalone.attemptsSeen.length && standalone.attempts > 1) addReason(reasons, "Attempt history partial");
+    agentFlow(id, standalone.id, standalone.attempts, standalone.events, standalone.tools, resultId);
   }
   const runId = input.run?.id ?? scope.targetId;
   const sourceRunId = input.run?.retry?.sourceRunId;
@@ -303,17 +366,35 @@ export function adaptSemanticSnapshot(input: SemanticSnapshot): SemanticGraph {
     schemaVersion: 1, scope, nodes: visibleNodes, edges: visibleEdges,
     completeness: { partial: reasons.size > 0, reasons: [...reasons].sort(), omittedNodes: omittedNodes + omittedSourceNodes, omittedEdges: edgeOmission + omittedSourceEdges }
   };
+  const usageEntries = scope.targetKind === "run"
+    ? agents.flatMap((agent) => agent.usage ? [{ agentId: agent.id, usage: agent.usage }] : [])
+    : safeSnapshot.subagent && rawStandalone?.usage ? [{ agentId: safeSnapshot.subagent.id, usage: usageOf(rawStandalone.usage) ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } }] : [];
+  if (usageEntries.length) {
+    const total: SemanticUsage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
+    for (const { usage } of usageEntries) { total.input += usage.input; total.output += usage.output; total.cacheRead += usage.cacheRead; total.cacheWrite += usage.cacheWrite; if (usage.cost !== undefined) total.cost = (total.cost ?? 0) + usage.cost; }
+    graph.usage = { total, agents: usageEntries };
+  }
   if (bytes(graph) > SEMANTIC_MAP_LIMITS.payloadBytes) {
     const initialEdges = graph.edges.length;
     addReason(reasons, "Rendered graph exceeds bridge payload limit");
     graph.completeness.partial = true;
     graph.completeness.reasons = [...reasons].sort();
-    while (graph.nodes.length && bytes(graph) > SEMANTIC_MAP_LIMITS.payloadBytes) {
-      const removed = graph.nodes.pop();
-      graph.edges = graph.edges.filter((item) => item.from !== removed?.id && item.to !== removed?.id);
-      graph.completeness.omittedNodes += 1;
-      graph.completeness.partial = true;
+    // Keep the longest node prefix (and the edges inside it) that fits. Serialized size only grows with the prefix, so a
+    // binary search gives the same result as dropping trailing nodes one at a time, without one serialization per node.
+    const allNodes = graph.nodes, allEdges = graph.edges, baseOmittedNodes = graph.completeness.omittedNodes;
+    const prefix = (count: number): SemanticGraph => {
+      const kept = new Set(allNodes.slice(0, count).map((item) => item.id));
+      return { ...graph, nodes: allNodes.slice(0, count), edges: allEdges.filter((item) => kept.has(item.from) && kept.has(item.to)), completeness: { ...graph.completeness, omittedNodes: baseOmittedNodes + allNodes.length - count } };
+    };
+    let best = 0;
+    for (let low = 0, high = allNodes.length - 1; low <= high;) {
+      const middle = Math.floor((low + high) / 2);
+      if (bytes(prefix(middle)) <= SEMANTIC_MAP_LIMITS.payloadBytes) { best = middle; low = middle + 1; } else high = middle - 1;
     }
+    const fitted = prefix(best);
+    graph.nodes = fitted.nodes;
+    graph.edges = fitted.edges;
+    graph.completeness.omittedNodes = fitted.completeness.omittedNodes;
     graph.completeness.omittedEdges += initialEdges - graph.edges.length;
   }
   return graph;

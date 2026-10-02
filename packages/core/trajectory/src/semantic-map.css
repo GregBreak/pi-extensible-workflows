@@ -1,15 +1,106 @@
+/* Embedded Archify page: the map scrolls instead of being clipped (vendor embed mode hides overflow). */
+html[data-embed="true"] body { overflow: auto !important; }
+html[data-embed="true"] .diagram-container { overflow: auto; }
+
+/* Agent boxes */
+.semantic-map-group-shape { fill: #111d30; stroke: #52647d; stroke-width: 1; }
+.semantic-map-group-label { fill: #e2e8f0; font: 600 13px system-ui, sans-serif; }
+.semantic-map-group-status { fill: #94a3b8; font: 10px system-ui, sans-serif; }
+.semantic-map-group-scope { fill: #94a3b8; font: italic 9.5px system-ui, sans-serif; pointer-events: none; }
+.semantic-map-group-stats { fill: #a5b4c8; font: 600 9.5px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; letter-spacing: .02em; pointer-events: none; }
+.semantic-map-group-background { pointer-events: none; }
+.agent-color-0 .semantic-map-group-shape { fill: #12304a; stroke: #3b82f6; }
+.agent-color-1 .semantic-map-group-shape { fill: #133a2f; stroke: #10b981; }
+.agent-color-2 .semantic-map-group-shape { fill: #3d2a12; stroke: #f59e0b; }
+.agent-color-3 .semantic-map-group-shape { fill: #36183a; stroke: #c084fc; }
+.agent-color-4 .semantic-map-group-shape { fill: #3d1a24; stroke: #f472b6; }
+.agent-color-5 .semantic-map-group-shape { fill: #103a3d; stroke: #22d3ee; }
+.agent-color-6 .semantic-map-group-shape { fill: #2f3512; stroke: #a3e635; }
+.agent-color-7 .semantic-map-group-shape { fill: #3d2418; stroke: #fb923c; }
+.group-running .semantic-map-group-shape { stroke: #38bdf8; stroke-width: 2.5; stroke-dasharray: 8 4; }
+.group-running .semantic-map-group-status { fill: #38bdf8; font-weight: 700; }
+.semantic-map-stage-label { fill: #94a3b8; font: 700 11px system-ui, sans-serif; letter-spacing: .14em; pointer-events: none; }
+html[data-theme="light"] .semantic-map-group-shape { fill: #eef3fa; stroke: #a3b5cc; }
+html[data-theme="light"] .agent-color-0 .semantic-map-group-shape { fill: #dbeafe; }
+html[data-theme="light"] .agent-color-1 .semantic-map-group-shape { fill: #d1fae5; }
+html[data-theme="light"] .agent-color-2 .semantic-map-group-shape { fill: #fef3c7; }
+html[data-theme="light"] .agent-color-3 .semantic-map-group-shape { fill: #f3e8ff; }
+html[data-theme="light"] .agent-color-4 .semantic-map-group-shape { fill: #fce7f3; }
+html[data-theme="light"] .agent-color-5 .semantic-map-group-shape { fill: #cffafe; }
+html[data-theme="light"] .agent-color-6 .semantic-map-group-shape { fill: #ecfccb; }
+html[data-theme="light"] .agent-color-7 .semantic-map-group-shape { fill: #ffedd5; }
+html[data-theme="light"] .semantic-map-group-label { fill: #172033; }
+html[data-theme="light"] .semantic-map-group-status, html[data-theme="light"] .semantic-map-group-scope, html[data-theme="light"] .semantic-map-stage-label { fill: #475569; }
+html[data-theme="light"] .semantic-map-group-stats { fill: #334155; }
+#semantic-map-target { inset: .4rem auto auto .4rem; max-width: 75%; }
+
+/* Nodes: the outline shape tells the kind, the neon outline tells the state. */
 .semantic-map-node { cursor: pointer; }
-.semantic-map-node:focus-visible .semantic-map-node-shape { stroke: #7dd3fc; stroke-width: 3; }
-.semantic-map-node-shape { fill: #172033; stroke: #64748b; stroke-width: 1.25; }
-.semantic-map-node[data-node-kind="workflow"] .semantic-map-node-shape { fill: #1e3a5f; }
-.semantic-map-node[data-node-kind="task"] .semantic-map-node-shape { fill: #243047; }
-.semantic-map-node-shape.state-running { stroke: #38bdf8; }
-.semantic-map-node-shape.state-success { stroke: #34d399; }
-.semantic-map-node-shape.state-failure { stroke: #fb7185; }
+.semantic-map-node-shape { fill: #172033; stroke: #64748b; stroke-width: 1.5; }
+.kind-agent .semantic-map-node-shape { fill: #1e293b; }
+.kind-system .semantic-map-node-shape { fill: #2e1065; }
+.kind-user .semantic-map-node-shape { fill: #083344; }
+.kind-assistant .semantic-map-node-shape { fill: #1e1b4b; }
+.kind-tool .semantic-map-node-shape { fill: #3b2506; }
+.kind-result .semantic-map-node-shape { fill: #0f2a1e; }
+html[data-theme="light"] .kind-agent .semantic-map-node-shape { fill: #f8fafc; }
+html[data-theme="light"] .kind-system .semantic-map-node-shape { fill: #ede9fe; }
+html[data-theme="light"] .kind-user .semantic-map-node-shape { fill: #cffafe; }
+html[data-theme="light"] .kind-assistant .semantic-map-node-shape { fill: #e0e7ff; }
+html[data-theme="light"] .kind-tool .semantic-map-node-shape { fill: #fef3c7; }
+html[data-theme="light"] .kind-result .semantic-map-node-shape { fill: #dcfce7; }
+.semantic-map-node-shape.state-success { stroke: #22f59a; stroke-width: 2; filter: drop-shadow(0 0 4px rgba(34, 245, 154, .85)); }
+.semantic-map-node-shape.state-running { stroke: #38bdf8; stroke-width: 2.5; filter: drop-shadow(0 0 6px rgba(56, 189, 248, .95)); }
+.semantic-map-node-shape.state-failure { stroke: #ff3b5c; stroke-width: 2.25; filter: drop-shadow(0 0 5px rgba(255, 59, 92, .95)); }
+.semantic-map-node-shape.state-retrying { stroke: #fbbf24; stroke-width: 2; filter: drop-shadow(0 0 4px rgba(251, 191, 36, .8)); }
 .semantic-map-node-shape.state-cancelled, .semantic-map-node-shape.state-interrupted { stroke: #fbbf24; stroke-dasharray: 4 2; }
-.semantic-map-node-label { fill: #f8fafc; font: 9px system-ui, sans-serif; pointer-events: none; }
+html[data-theme="light"] .semantic-map-node-shape.state-success { stroke: #059669; filter: drop-shadow(0 0 4px rgba(16, 185, 129, .75)); }
+html[data-theme="light"] .semantic-map-node-shape.state-running { stroke: #0284c7; filter: drop-shadow(0 0 5px rgba(2, 132, 199, .8)); }
+html[data-theme="light"] .semantic-map-node-shape.state-failure { stroke: #e11d48; filter: drop-shadow(0 0 4px rgba(225, 29, 72, .75)); }
+.node-running .semantic-map-node-shape { stroke-width: 3.5; animation: semantic-map-running 1.4s ease-in-out infinite; }
+.node-running .semantic-map-node-label { font-weight: 700; }
+@keyframes semantic-map-running { 50% { stroke-opacity: .45; } }
+@media (prefers-reduced-motion: reduce) { .node-running .semantic-map-node-shape { animation: none; } }
+/* Retries: inner red neon frame = at least one failed attempt; outer frame keeps the final state colour. */
+.semantic-map-node-inner { display: none; fill: none; pointer-events: none; }
+.node-had-failure .semantic-map-node-inner { display: inline; stroke: #ff3b5c; stroke-width: 2; filter: drop-shadow(0 0 4px rgba(255, 59, 92, .95)); }
+.semantic-map-retry-loop { display: none; fill: none; pointer-events: none; }
+.node-retried .semantic-map-retry-loop { display: inline; stroke: #fbbf24; stroke-width: 1.75; }
+.semantic-map-retry-count { fill: #fbbf24; font: 700 11px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; pointer-events: none; }
+html[data-theme="light"] .node-retried .semantic-map-retry-loop { stroke: #b45309; }
+html[data-theme="light"] .semantic-map-retry-count { fill: #b45309; }
+/* Dense graphs keep state colours but drop glow filters so large updates stay inside the performance budget. */
+.semantic-map-nodes.semantic-map-dense .semantic-map-node-shape.state-success, .semantic-map-nodes.semantic-map-dense .semantic-map-node-shape.state-failure, .semantic-map-nodes.semantic-map-dense .semantic-map-node-shape.state-retrying { filter: none; }
+.semantic-map-node[aria-pressed="true"] .semantic-map-node-shape { stroke: #facc15; stroke-width: 3; }
+.semantic-map-node:focus-visible .semantic-map-node-shape { stroke: #7dd3fc; stroke-width: 3; }
+.semantic-map-node-label { fill: #f8fafc; font: 10px system-ui, sans-serif; pointer-events: none; }
 .semantic-map-node-status { fill: #cbd5e1; font: 8px system-ui, sans-serif; pointer-events: none; }
-.semantic-map-edge-path { fill: none; stroke: #64748b; stroke-width: 1.25; opacity: .8; }
-.semantic-map-edge-path.relation-dependency, .semantic-map-edge-path.relation-fork, .semantic-map-edge-path.relation-merge { stroke-dasharray: 4 3; }
+.semantic-map-node-status.status-running { fill: #7dd3fc; font-weight: 700; }
+.semantic-map-node-status.status-success { fill: #4ade80; }
+.semantic-map-node-status.status-failure { fill: #fb7185; }
+html[data-theme="light"] .semantic-map-node-label { fill: #0f172a; }
+html[data-theme="light"] .semantic-map-node-status { fill: #334155; }
+html[data-theme="light"] .semantic-map-node-status.status-running { fill: #0369a1; }
+html[data-theme="light"] .semantic-map-node-status.status-success { fill: #047857; }
+html[data-theme="light"] .semantic-map-node-status.status-failure { fill: #be123c; }
+
+/* Edges: one style per meaning. */
+.semantic-map-edge-path { fill: none; stroke: #94a3b8; stroke-width: 1.4; opacity: .9; }
+.semantic-map-edge-path.relation-invokes { stroke: #fbbf24; }
+.semantic-map-edge-path.relation-produces { stroke: #4ade80; }
+.semantic-map-edge-path.relation-phase { stroke: #38bdf8; stroke-width: 1.9; stroke-dasharray: 7 4; opacity: 1; }
+.semantic-map-edge-path.relation-contains { stroke: #c084fc; stroke-dasharray: 3 3; }
+.semantic-map-edge-path.relation-dependency, .semantic-map-edge-path.relation-fork, .semantic-map-edge-path.relation-merge { stroke: #a78bfa; stroke-width: 1.75; stroke-dasharray: 4 3; opacity: 1; }
 .semantic-map-edge-path.relation-retry { stroke: #fbbf24; stroke-dasharray: 2 3; }
-.semantic-map-completeness { position: absolute; inset: auto 1rem 1rem auto; z-index: 5; max-width: min(38rem, 80%); margin: 0; padding: .45rem .65rem; border: 1px solid #64748b; border-radius: .35rem; background: #0f172add; color: #e2e8f0; font: 12px system-ui, sans-serif; pointer-events: none; }
+html[data-theme="light"] .semantic-map-edge-path { stroke: #64748b; }
+html[data-theme="light"] .semantic-map-edge-path.relation-invokes { stroke: #b45309; }
+html[data-theme="light"] .semantic-map-edge-path.relation-produces { stroke: #15803d; }
+html[data-theme="light"] .semantic-map-edge-path.relation-phase { stroke: #0284c7; }
+
+/* Workflow totals on the canvas background */
+.semantic-map-canvas-stats { pointer-events: none; }
+.semantic-map-canvas-stats-title { fill: #94a3b8; font: 700 10px system-ui, sans-serif; letter-spacing: .12em; }
+.semantic-map-canvas-stats-line { fill: #e2e8f0; font: 600 12px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+html[data-theme="light"] .semantic-map-canvas-stats-title { fill: #475569; }
+html[data-theme="light"] .semantic-map-canvas-stats-line { fill: #0f172a; }
+.semantic-map-completeness { position: absolute; inset: auto auto 1rem 1rem; z-index: 5; max-width: min(30rem, 50%); margin: 0; padding: .45rem .65rem; border: 1px solid #64748b; border-radius: .35rem; background: #0f172add; color: #e2e8f0; font: 12px system-ui, sans-serif; pointer-events: none; }

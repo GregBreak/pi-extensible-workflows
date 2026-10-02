@@ -1,4 +1,4 @@
-import type { SemanticAgent, SemanticSnapshot } from "./adapter.js";
+import type { SemanticAgent, SemanticEvent, SemanticSnapshot, SemanticUsage } from "./adapter.js";
 import { SemanticMapBridge, type ParentSemanticNode } from "./bridge.js";
 
 const MAX_CACHED_CALLS = 32;
@@ -7,7 +7,10 @@ const MAX_SOURCE_RELATIONS = 8;
 const MAX_STRUCTURAL_PATH = 8;
 const MAX_RUN_TOOL_CALLS = 16;
 const MAX_SNAPSHOT_BYTES = 384 * 1024;
+const MAX_AGENT_EVENTS = 48;
+const MAX_RUN_EVENTS = 320;
 const encoder = new TextEncoder();
+declare const __SEMANTIC_MAP_BUILD_STAMP__: string;
 type SemanticProjection = { snapshot: SemanticSnapshot; identity: string; nodes: ReadonlyMap<string, ParentSemanticNode>; nodeCount: number };
 type TargetKind = "run" | "subagent";
 type Target = { kind: TargetKind; publisherId: string; id: string };
@@ -17,6 +20,9 @@ type AppContext = {
   state: AppState;
   selected: () => FoundTarget | undefined;
   setView: (view: string) => void;
+  inspect?: (selection: { agentId: string; kind: ParentSemanticNode["kind"]; callId?: string; ordinal?: number } | null) => void;
+  /** Requests the existing transcript RPC for an agent (run) or the selected subagent (no id); content stays in the parent. */
+  requestTranscript?: (agentId?: string) => void;
   staticExport: boolean;
 };
 type UiWindow = Window & { __PIEWF_SEMANTIC_MAP_CONTEXT__?: AppContext; __PIEWF_SEMANTIC_MAP_REFRESH__?: () => void; __PIEWF_SEMANTIC_MAP_VISIBILITY__?: (visible: boolean) => void; __PIEWF_SEMANTIC_MAP_THEME__?: () => void };
@@ -81,6 +87,16 @@ function indexSemanticNodes(snapshot: SemanticSnapshot): { nodes: ReadonlyMap<st
     }
     return id;
   };
+  const addFlow = (owner: string, attempts: number, events: readonly SemanticEvent[] | undefined, calls: readonly { id: string }[] | undefined): void => {
+    if (events?.length) {
+      const ordinals = new Map<string, number>();
+      events.forEach((event, index) => {
+        const ordinal = ordinals.get(event.kind) ?? 0; ordinals.set(event.kind, ordinal + 1);
+        if (event.kind === "tool") add("tool-call", [owner, attempts || 1, event.id ?? String(index)], `${owner}/${event.id ?? String(index)}`);
+        else add(event.kind, [owner, "event", index], `${owner}#${event.kind}#${String(ordinal)}`);
+      });
+    } else for (const call of calls ?? []) add("tool-call", [owner, attempts || 1, call.id], `${owner}/${call.id}`);
+  };
   const rootId = add("workflow", [scope.targetId], scope.targetId);
   if (snapshot.run) {
     const sortedAgents = [...(snapshot.run.agents ?? [])].sort((left, right) => left.id.localeCompare(right.id) || JSON.stringify(left).localeCompare(JSON.stringify(right)));
@@ -91,49 +107,75 @@ function indexSemanticNodes(snapshot: SemanticSnapshot): { nodes: ReadonlyMap<st
       add("agent", [agent.id], agent.id);
       let path: string[] = [];
       for (const part of agent.structuralPath ?? []) { path = [...path, normalizedPath(part)]; add("task", path, agent.id); }
-      for (const attempt of agent.attemptDetails ?? []) add("agent", [agent.id, "attempt", attempt.attempt], agent.id);
       add("result", [agent.id, "output"], agent.id);
-      for (const call of agent.toolCalls ?? []) add("tool-call", [agent.id, agent.attempts || 1, call.id], `${agent.id}/${call.id}`);
+      addFlow(agent.id, agent.attempts || 1, agent.events, agent.toolCalls);
     }
     if (snapshot.run.retry?.sourceRunId) add("workflow", [snapshot.run.retry.sourceRunId], snapshot.run.retry.sourceRunId);
   } else if (snapshot.subagent) {
     const agent = snapshot.subagent;
     add("agent", [agent.id], agent.id);
     add("result", [agent.id, "output"], agent.id);
-    for (const attempt of agent.attemptDetails ?? []) add("agent", [agent.id, "attempt", attempt.attempt], agent.id);
-    for (const call of agent.progress?.toolCalls ?? []) add("tool-call", [agent.id, agent.attempts ?? 0, call.id], `${agent.id}/${call.id}`);
+    addFlow(agent.id, agent.attempts ?? 0, agent.events, agent.progress?.toolCalls);
   }
   const visibleIds = [rootId, ...[...candidates.keys()].filter((id) => id !== rootId).sort().slice(0, 499)];
   return { nodes: new Map(visibleIds.flatMap((id) => candidates.has(id) ? [[id, candidates.get(id) as ParentSemanticNode] as const] : [])), nodeCount: visibleIds.length };
 }
 
-function cachedToolCalls(context: AppContext, found: FoundTarget, agentId: string, attempt: number): { calls: { id: string; name: string; state: string }[]; omitted: number } {
-  const isSubagent = found.target.kind === "subagent";
-  const key = isSubagent ? `${String(found.publisher.id)}\tsubagent\t${String(found.record.id)}` : `${String(found.publisher.id)}\t${String(asRecord(found.record.run)?.id)}\t${agentId}`;
-  const entries = context.state.transcripts[key];
-  if (!Array.isArray(entries)) return { calls: [], omitted: 0 };
-  const calls = new Map<string, { id: string; name: string; state: string }>();
+/**
+ * Event kinds and tool names/states from a transcript the parent already cached (kinds only: no text, prompts,
+ * arguments or results). Returns undefined while no transcript is cached, so the map falls back to recorded calls.
+ */
+function cachedEvents(entries: unknown, hasSystemPrompt: boolean, running: boolean): SemanticEvent[] | undefined {
+  if (!Array.isArray(entries)) return undefined;
+  const window = entries.slice(-4096);
   const results = new Map<string, boolean>();
-  for (const rawEntry of entries.slice(-4096)) {
+  for (const rawEntry of window) {
+    const entry = asRecord(rawEntry); const message = asRecord(entry?.message) ?? entry;
+    const callId = safeText(message?.toolCallId, 128);
+    if (entry && callId && (entry.type === "tool_result" || message?.role === "toolResult")) results.set(callId, message?.isError === true || entry.isError === true);
+  }
+  const events: SemanticEvent[] = hasSystemPrompt ? [{ kind: "system", name: "System prompt", state: "completed" }] : [];
+  const seenCalls = new Set<string>();
+  let users = 0;
+  for (const rawEntry of window) {
     const entry = asRecord(rawEntry);
-    const message = asRecord(entry?.message) ?? entry;
-    if (!entry || !message) continue;
-    const callId = safeText(message.toolCallId, 128);
-    if (callId && (entry.type === "tool_result" || message.role === "toolResult")) results.set(callId, message.isError === true || entry.isError === true);
-    const parts = Array.isArray(message.content) ? message.content : [];
-    for (const rawPart of parts) {
+    if (!entry) continue;
+    if ((entry.type === "system_prompt" || entry.type === "session") && !events.some((event) => event.kind === "system")) { events.unshift({ kind: "system", name: "System prompt", state: "completed" }); continue; }
+    const message = asRecord(entry.message);
+    if (entry.type !== "message" || !message) continue;
+    if (message.role === "user") { events.push({ kind: "user", name: users === 0 ? "Prompt" : "User message", state: "completed" }); users += 1; continue; }
+    if (message.role !== "assistant") continue;
+    const parts = Array.isArray(message.content) ? message.content.map(asRecord) : [];
+    const usage = asRecord(message.usage);
+    // Host-synthesized closing turns (no content, zero usage, e.g. after workflow_result) are not model turns.
+    if (!parts.some((part) => (part?.type === "text" && typeof part.text === "string" && part.text.trim()) || part?.type === "toolCall" || part?.type === "thinking") && numberOf(usage?.input) + numberOf(usage?.output) === 0) continue;
+    events.push({ kind: "assistant", name: "Assistant", state: message.stopReason === "error" ? "failed" : message.stopReason === "aborted" ? "cancelled" : "completed" });
+    for (const rawPart of Array.isArray(message.content) ? message.content : []) {
       const part = asRecord(rawPart);
-      if (!part || part.type !== "toolCall") continue;
-      const id = safeText(part.id, 128);
-      const name = safeText(part.name, 120);
-      if (id && name && !calls.has(id)) calls.set(id, { id, name, state: "running" });
+      const id = safeText(part?.id, 128); const name = safeText(part?.name, 120);
+      if (part?.type !== "toolCall" || !id || !name || seenCalls.has(id)) continue;
+      seenCalls.add(id);
+      events.push({ kind: "tool", id, name, state: results.has(id) ? results.get(id) ? "failed" : "completed" : running ? "running" : "completed" });
     }
   }
-  for (const [id, call] of calls) {
-    if (results.has(id)) calls.set(id, { ...call, state: results.get(id) ? "failed" : "completed" });
-  }
-  const ordered = [...calls.values()];
-  return { calls: ordered.slice(-MAX_CACHED_CALLS).map((call) => ({ ...call, state: call.state || `attempt-${String(attempt)}` })), omitted: Math.max(0, ordered.length - MAX_CACHED_CALLS) };
+  const last = events.at(-1);
+  if (running && last && last.kind !== "tool") events[events.length - 1] = { ...last, state: "running" };
+  return events;
+}
+/** Keeps the opening system/user turns and the most recent turns of a long transcript. */
+function boundEvents(events: SemanticEvent[], limit: number): SemanticEvent[] {
+  if (events.length <= limit) return events;
+  return limit <= 2 ? events.slice(0, limit) : [...events.slice(0, 2), ...events.slice(-(limit - 2))];
+}
+/** Recorded phase boundaries: `phaseHistory[i].afterAgent` is the launch index where phase i starts. */
+function phaseOf(run: Record<string, unknown>, launch: number): { phase: string; phaseIndex: number } | undefined {
+  const history = safeArray(run.phaseHistory, 64).map(asRecord);
+  let found: { phase: string; phaseIndex: number } | undefined;
+  history.forEach((entry, index) => {
+    const phase = safeText(entry?.phase, 80); const after = entry?.afterAgent;
+    if (phase && typeof after === "number" && Number.isSafeInteger(after) && after <= launch) found = { phase, phaseIndex: index };
+  });
+  return found;
 }
 
 /** Whitelist current accepted metadata; never copies prompts, scripts, environment, args, or result values. */
@@ -152,11 +194,12 @@ export function projectCurrentSemanticSnapshot(context: AppContext): SemanticPro
     const allAgents = Array.isArray(run.agents) ? run.agents : [];
     const rawAgents = allAgents.slice(0, MAX_SOURCE_AGENTS);
     let callsRemaining = MAX_RUN_TOOL_CALLS;
+    let eventsRemaining = MAX_RUN_EVENTS;
     let omittedToolCalls = 0;
     let omittedStructure = 0;
     let invalidAgents = 0;
     const omittedReasons = new Set<string>();
-    const agents = rawAgents.flatMap((raw): SemanticAgent[] => {
+    const agents = rawAgents.flatMap((raw, launch): SemanticAgent[] => {
       const agent = asRecord(raw);
       const id = safeText(agent?.id, 128);
       if (!agent || !id) { invalidAgents += 1; return []; }
@@ -178,15 +221,23 @@ export function projectCurrentSemanticSnapshot(context: AppContext): SemanticPro
       const label = safeText(agent.label, 120);
       const output = safeOutput(agent.output);
       const parentId = safeText(agent.parentId, 128);
-      const cached = cachedToolCalls(context, found, id, attempt);
-      const toolCalls = callsRemaining > 0 ? cached.calls.slice(0, callsRemaining) : [];
+      const transcript = context.state.transcripts[`${String(found.publisher.id)}\t${String(asRecord(found.record.run)?.id)}\t${id}`];
+      const usage = usageProjection(agent.accounting, transcript);
+      const allEvents = cachedEvents(transcript, typeof agent.systemPrompt === "string" && agent.systemPrompt.length > 0, agent.state === "running");
+      const events = allEvents ? boundEvents(allEvents, Math.max(0, Math.min(MAX_AGENT_EVENTS, eventsRemaining))) : undefined;
+      if (allEvents && events) { eventsRemaining -= events.length; omittedToolCalls += allEvents.length - events.length; if (events.length < allEvents.length) omittedReasons.add("Transcript event projection bounded"); }
+      // Without a cached transcript, recorded live tool calls (bounded) still show what the agent is doing.
+      const recorded = events ? [] : safeArray(agent.toolCalls, MAX_CACHED_CALLS).flatMap((rawCall) => { const call = asRecord(rawCall); const callId = safeText(call?.id, 128); const name = safeText(call?.name, 120); return callId && name ? [{ id: callId, name, state: safeText(call?.state, 40) ?? "unknown" }] : []; });
+      const toolCalls = callsRemaining > 0 ? recorded.slice(0, callsRemaining) : [];
       callsRemaining -= toolCalls.length;
-      omittedToolCalls += cached.omitted + cached.calls.length - toolCalls.length;
-      if (omittedToolCalls > 0) omittedReasons.add("Cached tool-call projection bounded");
+      omittedToolCalls += recorded.length - toolCalls.length;
+      if (recorded.length > toolCalls.length) omittedReasons.add("Recorded tool-call projection bounded");
+      const phase = phaseOf(run, launch);
       return [{
         id, ...(name ? { name } : {}), ...(label ? { label } : {}), state: safeText(agent.state, 40) ?? "unknown",
         ...(parentId ? { parentId } : {}), structuralPath,
-        attempts: attempt, attemptDetails, toolCalls, ...(output ? { output } : {})
+        attempts: attempt, attemptDetails, toolCalls, ...(output ? { output } : {}),
+        usage, ...(events ? { events } : {}), ...(phase ?? {}), launch
       }];
     });
     const allRelations = Array.isArray(run.relations) ? run.relations : [];
@@ -239,18 +290,45 @@ export function projectCurrentSemanticSnapshot(context: AppContext): SemanticPro
   const allAttempts = found.record.attemptDetails;
   const omittedAttempts = Math.max(0, (Array.isArray(allAttempts) ? allAttempts.length : 0) - details.length);
   const omittedCalls = Math.max(0, (Array.isArray(allToolCalls) ? allToolCalls.length : 0) - toolCalls.length);
+  const subagentTranscript = context.state.transcripts[`${publisherId}\tsubagent\t${targetId}`];
+  const subagentUsage = usageProjection(progress?.accounting ?? asRecord(found.record.attempt)?.accounting, subagentTranscript);
+  const allSubagentEvents = cachedEvents(subagentTranscript, false, found.record.state === "running");
+  const subagentEvents = allSubagentEvents ? boundEvents(allSubagentEvents, MAX_AGENT_EVENTS) : undefined;
+  const omittedEvents = (allSubagentEvents?.length ?? 0) - (subagentEvents?.length ?? 0);
   const snapshot = boundedSnapshot({
     scope: { publisherId, targetKind: "subagent", targetId },
     subagent: {
       id: targetId, ...(label ? { label } : {}), state: safeText(found.record.state, 40) ?? "unknown",
-      attempts, attemptDetails: details, ...(output ? { output } : {}), progress: { toolCalls }
+      attempts, attemptDetails: details, ...(output ? { output } : {}), progress: { toolCalls },
+      usage: subagentUsage, ...(subagentEvents ? { events: subagentEvents } : {})
     },
     partial: {
-      reasons: ["Live projection excludes prompts, scripts, environment, tool arguments, and result values", ...(omittedCalls ? ["Subagent tool-call list bounded"] : []), ...(omittedAttempts ? ["Subagent attempt history bounded"] : [])],
-      omittedNodes: omittedCalls + omittedAttempts
+      reasons: ["Live projection excludes prompts, scripts, environment, tool arguments, and result values", ...(omittedCalls ? ["Subagent tool-call list bounded"] : []), ...(omittedAttempts ? ["Subagent attempt history bounded"] : []), ...(omittedEvents ? ["Transcript event projection bounded"] : [])],
+      omittedNodes: omittedCalls + omittedAttempts + omittedEvents
     }
   });
   return { identity, snapshot, ...indexSemanticNodes(snapshot) };
+}
+
+const numberOf = (value: unknown): number => typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : 0;
+/** Latest assistant usage in a transcript already cached by the parent; context is never estimated from prompts. */
+function latestContext(entries: unknown): number | undefined {
+  if (!Array.isArray(entries)) return undefined;
+  for (let index = entries.length - 1; index >= Math.max(0, entries.length - 4096); index -= 1) {
+    const entry = asRecord(entries[index]); const message = asRecord(entry?.message) ?? entry; const usage = asRecord(message?.usage);
+    if (message?.role === "assistant" && usage) {
+      // Host-synthesized assistant turns (for example structured-result completion) carry all-zero usage; skip them.
+      const total = numberOf(usage.input) + numberOf(usage.output) + numberOf(usage.cacheRead) + numberOf(usage.cacheWrite);
+      if (total > 0) return total;
+    }
+  }
+  return undefined;
+}
+/** Recorded accounting only (token counts, no content) plus the cached-transcript context size when available. */
+function usageProjection(accounting: unknown, transcript: unknown): SemanticUsage {
+  const value = asRecord(accounting); const context = latestContext(transcript);
+  // Agents that have not consumed anything yet show zeros rather than disappearing from the box.
+  return { input: numberOf(value?.input), output: numberOf(value?.output), cacheRead: numberOf(value?.cacheRead), cacheWrite: numberOf(value?.cacheWrite), cost: numberOf(value?.cost), ...(context === undefined ? {} : { context }) };
 }
 
 /** Owns accessible tabs and explicit activation; static exports never create a browsing context. */
@@ -268,17 +346,25 @@ export function installSemanticMapUI(context: AppContext): void {
   const theme = (): "light" | "dark" => document.documentElement.dataset.theme === "light" || document.documentElement.dataset.theme === "dark"
     ? document.documentElement.dataset.theme
     : matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark";
-  const mapUrl = new URL("./semantic-map.html?embed=1", location.href);
+  // The generator replaces this placeholder with the same stamp as the viewer's JS/CSS references.
+  const mapUrl = new URL("./semantic-map.html", location.href);
+  mapUrl.searchParams.set("v", __SEMANTIC_MAP_BUILD_STAMP__);
+  mapUrl.searchParams.set("embed", "1");
   mapUrl.searchParams.set("theme", theme());
+  const retry = document.getElementById("semantic-map-retry");
   const bridge = new SemanticMapBridge({
     host,
     url: mapUrl.href,
+    build: __SEMANTIC_MAP_BUILD_STAMP__,
     theme,
     onStatus(message) { status.textContent = message; },
-    onRequest(node, detail) { handleNodeRequest(context, node, detail); }
+    onRequest(node, detail) { handleNodeRequest(context, node, detail); },
+    // A failed map stays closed with a visible reason; only the Retry button (or reopening the tab) starts it again.
+    onFailure() { if (retry && selectedTab === "map") retry.hidden = false; }
   });
   const update = (): void => {
-    if (selectedTab !== "map" || context.staticExport || document.body.dataset.view !== "run" || document.hidden) return;
+    if (selectedTab !== "map" || context.staticExport || document.body.dataset.view !== "run" || document.hidden || bridge.failedState) return;
+    requestMapTranscripts(context);
     const projection = projectCurrentSemanticSnapshot(context);
     if (!projection) {
       bridge.close();
@@ -294,7 +380,7 @@ export function installSemanticMapUI(context: AppContext): void {
     timelineTab.setAttribute("aria-selected", String(!isMap)); mapTab.setAttribute("aria-selected", String(isMap));
     timelineTab.tabIndex = isMap ? -1 : 0; mapTab.tabIndex = isMap ? 0 : -1;
     timelinePanel.hidden = isMap; mapPanel.hidden = !isMap;
-    if (!isMap) bridge.close();
+    if (!isMap) { bridge.close(); context.inspect?.(null); if (retry) retry.hidden = true; }
     else if (context.staticExport) status.textContent = "Semantic Map is available for live Trajectory sessions only; this is a static export.";
     else if (!context.selected()) status.textContent = "No selected workflow or subagent. Select a target, then reopen the map.";
     else { if (!host.querySelector("iframe")) bridge.open(); update(); }
@@ -313,11 +399,36 @@ export function installSemanticMapUI(context: AppContext): void {
   });
   const close = document.getElementById("semantic-map-close");
   close?.addEventListener("click", () => { activate("timeline"); timelineTab.focus(); });
+  retry?.addEventListener("click", () => {
+    if (selectedTab !== "map" || context.staticExport) return;
+    retry.hidden = true;
+    bridge.retry();
+    update();
+  });
+  // The map of the focused run (agent view) or subagent is one keyboard-operable step away from its detail view.
+  const focusMap = document.getElementById("focus-semantic-map");
+  focusMap?.addEventListener("click", () => {
+    if (!context.selected()) return;
+    context.setView("run");
+    activate("map");
+    mapTab.focus();
+  });
   const appWindow = window as UiWindow;
   appWindow.__PIEWF_SEMANTIC_MAP_REFRESH__ = update;
   appWindow.__PIEWF_SEMANTIC_MAP_VISIBILITY__ = (visible) => { bridge.setVisible(visible); };
   appWindow.__PIEWF_SEMANTIC_MAP_THEME__ = () => { bridge.setTheme(theme()); };
   void view;
+}
+
+/** The map shows each agent's recorded event sequence, so it asks for the (bounded, cached) transcripts it displays. */
+function requestMapTranscripts(context: AppContext): void {
+  const found = context.selected();
+  if (!found || !context.requestTranscript) return;
+  if (found.target.kind === "subagent") { context.requestTranscript(); return; }
+  for (const raw of safeArray(asRecord(found.record.run)?.agents, MAX_SOURCE_AGENTS)) {
+    const agent = asRecord(raw); const id = safeText(agent?.id, 128);
+    if (id && agent?.state !== "queued") context.requestTranscript(id);
+  }
 }
 
 function handleNodeRequest(context: AppContext, node: ParentSemanticNode, detail: boolean): void {
@@ -337,15 +448,23 @@ function handleNodeRequest(context: AppContext, node: ParentSemanticNode, detail
   const state = context.state as AppState & { currentAgent?: string; selectedEvent?: number; inspMode?: string };
   const agents = safeArray(run?.agents, MAX_SOURCE_AGENTS).map(asRecord).filter((item): item is Record<string, unknown> => Boolean(item));
   let agentId: string | undefined;
-  if (current.kind === "agent" || current.kind === "tool-call" || current.kind === "result") {
+  const eventRef = /^(.*)#(system|user|assistant)#(\d+)$/.exec(current.sourceRef);
+  if (current.kind === "system" || current.kind === "user" || current.kind === "assistant") agentId = safeText(eventRef?.[1], 128);
+  else if (current.kind === "agent" || current.kind === "tool-call" || current.kind === "result") {
     if (current.kind === "tool-call") {
       const matching = agents.filter((agent) => typeof agent.id === "string" && current.sourceRef.startsWith(`${agent.id}/`)).sort((a, b) => String(b.id).length - String(a.id).length)[0];
       agentId = safeText(matching?.id, 128);
     } else agentId = safeText(current.sourceRef, 128);
   }
   if (!agentId || !agents.some((agent) => agent.id === agentId)) return;
+  if (!detail) {
+    // Single click: show the selected agent/tool in the run inspector, exactly as the Gantt event inspector does.
+    context.inspect?.({ agentId, kind: current.kind, ...(current.kind === "tool-call" ? { callId: current.sourceRef.slice(agentId.length + 1) } : {}), ...(eventRef ? { ordinal: Number(eventRef[3]) } : {}) });
+    return;
+  }
+  context.inspect?.(null);
   state.currentAgent = agentId;
-  if (detail && current.kind === "tool-call") {
+  if (current.kind === "tool-call") {
     const transcriptKey = `${String(found.publisher.id)}\t${String(run?.id)}\t${agentId}`;
     const entries = context.state.transcripts[transcriptKey];
     if (Array.isArray(entries)) {
@@ -358,7 +477,7 @@ function handleNodeRequest(context: AppContext, node: ParentSemanticNode, detail
       if (eventIndex >= 0) { state.selectedEvent = eventIndex; state.inspMode = "event"; }
     }
   }
-  if (detail) context.setView("agent");
+  context.setView("agent");
 }
 
 if (typeof window !== "undefined") {

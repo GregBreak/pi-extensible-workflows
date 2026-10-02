@@ -190,6 +190,73 @@ This checkpoint updates only the enhanced plan, the Windows completion plan and 
 - **Next session:** start from this code checkpoint and the current [W0–W9 plan](trajectory-archify-windows-deploy.md), inspect the saved agent transcript if needed, and finish/verify W0–W2 before proceeding through framing, versioned URLs, browser/performance, packaging and Windows/Linux CI. Do not discard these fixes or repeat the finished E0–E3 work from scratch. W3–W8, visible delivery V0-D and final acceptance remain open; H0–H7 enhanced work stays deferred. Public deploy/personal-profile installation remain separately gated.
 - Commits are local checkpoints requested by the owner; **no push, PR, merge, tag or publish** is part of this handoff. Local ignored build/log/run artifacts are not included in Git and should not be mistaken for portable verification evidence.
 
+### P12 SMART2 partial execution and reporting/scope blockers
+
+**State: partial implementation saved in the working tree; E4 and deployment remain OPEN/BLOCKED. A host run marked `completed` is not proof of business success.**
+
+- The owner authorized continuing the current plan with SMART2. The committed baseline is `bf58520`; author/committer correction maps the historical `90474fb` → `19649ee`, `3bc6083` → `0636060`, and `b635c32` → `bf58520`. Preserve those earlier records as history, not new runtime evidence. No new commit, push, release, publication or personal-profile installation was performed by these executions.
+- Run `963ebddb-b3ba-4830-92d7-a65b731ca307` returned business `blocked` during discovery, with no plan or implementation: final Linux/deployment/enhanced gates were put in discovery `blockers`, which SMART2 treats as startup barriers. Linux Node/Chrome remain unavailable in WSL; its Windows npm is not Linux evidence. The scout also reported accidentally opening Chrome's personal profile with `chrome.exe --version`, then closing its owned process. Future browser probes must use metadata/CDP or headless Chrome with an isolated profile, never that command.
+- Run `a6447b7c-a41e-475b-b0d1-cb376f6fc9d8` implemented T01, but SMART2 downgraded its submitted `passed` report because `checks` included `skipped` items outside the task's local acceptance. The six T01 source files and recorded raw checksums were independently checked against the saved report; the build, lint, tools **4/4**, layout **7/7** and pinned browser **3/3** logs were inspected. T01 uses esbuild's existing API, protects changelog staging/cleanup ownership, makes layout tests use temporary fixtures, and restores the pinned feasibility JS bytes with targeted lint exceptions. These are focused Windows proofs, not integrated acceptance.
+- Run `b86181f0-26cf-45ce-966c-cc7277f56c4a` reached six operational waves, then returned business `blocked`; integration and final verification are `null`, and the delivery invocation never ran. T02, T03 and T05 were accepted by the workflow. T04, T06 and T07 wrote useful implementation and reported positive local checks, but their reports were rejected; do not retrospectively change their persisted status to `passed`.
+
+| Task / area | Saved implementation and reported Windows evidence | Remaining qualification |
+| --- | --- | --- |
+| T02 — runner | JSON-array `TEST_FILES` handles spaces; invalid/unmatched selections fail explicitly; discovery/exclusions and isolated child environment have real-process regressions. | Local task passed; full final suite remains open. |
+| T03 — launcher | Child-cwd-aware resolution, literal argv, PATH/shim handling, explicit batch opt-in, timeout/cancellation and reusable process fixtures; launcher **12/12** on three runs, focused existing callers **45/45**. | An initial agent attempt stalled on unbounded `python -` under Git Bash; it was cancelled and a subsequent attempt completed. Use edit/Node and bounded commands for further changes. |
+| T04 — callers | Editor batch launch, eval environment isolation and portable fixtures; core caller group **91/91** on three runs, CLI bundles **10/10** and pi-role **5/5**, build/lint positive. | Report rejected: combined prose string for three `dist` paths, which were also absent from declared write scope. Deterministic Herdr extension tests separately reported **7 passed / 26 cancelled**; POSIX pane launching remains a real Windows issue, not resolved by core Herdr tests. |
+| T05 — path/trust | Central `paths.ts` resolves effective Windows spelling with the native realpath API; new drive/case/junction/trust regressions pass without changing structural/storage IDs. | Broader core comparison still has **13 failures** after removing the two reproduced failures; doctor still reports a file-level failure. Capability-specific and pre-existing skips were reported. No-new-failures comparison does not close the full Windows gate. |
+| T06 — framing | Incremental per-frame decoding, bounded residue, early invalid-length rejection and upgrade `head`; framing **8/8**, server **16/16**, oversized publisher **1/1**, adjacent groups **52/52**, **1/1**, **9/9**; focused group **9/9** on five repeats. | Report rejected because rebuilt `packages/core/dist` was outside declared writes. The implementation and regression files remain; no final integrated acceptance occurred. |
+| T07 — build/version references | Placeholder-based reproducible stamp and digest manifest, parent/HTML versioned references; generator **5/5**, map/package/bridge/lock group **22/22**, build/lint positive. Stamp is **`c225be383bb6ee3f`**; raw map assets **798,840 B**. | Report rejected: `changedFiles` entries contained checksum/comment annotations rather than literal paths, and `dist` was outside declared writes. Server version enforcement/lazy digest checks, build handshake and lock/health upgrade work did not execute. |
+
+- Evidence roots: `.tmp/archify/local-w1-w4/T01/` and `.tmp/archify/local-w1-w4/smart2-continuation-bf58520-01/T02/` through `T07/`. Workflow result/journal files are in the local run store for the IDs above; raw logs and reports remain local, not GitHub evidence. Numbers in the table are inspected/report-derived intermediate results, **not fresh reruns on the final combined candidate**.
+- Root orchestration correction needed before another execution: `checks` must contain only required task checks (required failures/skips still block; non-required non-runs remain explicit in summary/artifacts); `changedFiles` must contain one plain project-relative path per entry, with no parenthetical metadata or comma-joined paths; every actual build/generated-output write must be declared or performed in the declared isolated copy. Exclusive resource locks are not write-scope authorization. Fix the plan/report contract, not the validator by relaxing scope enforcement. Do not replay an unchanged run or discard/reimplement successful work; verify actual combined changes without rewriting old journals.
+- W4 server 404/503 enforcement, actual-byte coherence and build-aware handshake/upgrade remain unfinished. W5 browser/lifecycle/p95/10-minute/control-heap acceptance, V0-D demo/screenshots, complete W6 installed consumers/smoke/rollback, W7 matrix execution and W8 final dossier have not been delivered. Native Linux and final W9 destination remain separate unresolved gates. No `Product GO`, `READY FOR DEPLOY` or final `DEPLOYED` claim is justified.
+
+### P13 SMART2 completion and final candidate dossier
+
+**State: local Windows work and the final-candidate dossier are delivered. E4 and deployment remain BLOCKED: required gates are not green (npm audit, Linux, and possibly the original heap protocol; see the dossier). Nothing here is `Product GO`, `READY FOR DEPLOY` or `DEPLOYED`.**
+
+- SMART2 run `c126a1a8-db40-4c36-859b-c811ede71ee4` finished with business status `blocked`.
+  - Accepted tasks: W4_HTTP, W4_BRIDGE, WINDOWS_GATES, LIVE_DEMO and BROWSER_ACCEPTANCE.
+  - PACKED_CONSUMER failed only on the required `npm audit`. FINAL_CANDIDATE did not run.
+  - The follow-up FINAL_INTEGRATION task wrote this entry, the documentation, the CI matrix and the final dossier, and restored the original heap protocol.
+  - HEAD is still `bf5852017c2e1d6785096cd7c8094550be63dae0`. All work is uncommitted. No commit, push, publish, CI run, dependency, lockfile or version change was made.
+- **Where the numbers are.** Results live in the ignored local dossier `.tmp/archify/final-candidate/<candidate-id>/`; the file `.tmp/archify/final-candidate/LATEST` names the current one.
+  - The candidate id is the first 7 characters of HEAD plus the first 12 hex characters of a SHA-256 over HEAD and the bytes of every dirty or untracked file. `scripts/demo-trajectory-semantic-map.mjs` and `scripts/trajectory-semantic-map-acceptance.mjs` compute it the same way.
+  - Any later source, documentation or CI edit changes the id and invalidates the dossier's gates.
+  - The dossier is local only. It is not portable proof and not GitHub evidence.
+- **Heap protocol.** The original G5 heap protocol uses 10 warm-up cycles. It failed marginally in BROWSER_ACCEPTANCE dev-6 and dev-7: excess 45864 and 45960 B against a tolerance of 45456 B. Those raw runs are kept.
+  - A later diagnosis attributes the excess to V8 JIT code, not retained app objects.
+  - The 50-warm-up pass that followed is a **supplementary declared deviation**. It does not close the original criterion.
+  - `--heap-warmups` now defaults to 10 again. A value of 50 remains an explicit diagnostic option. The tolerance formula is unchanged and is still fixed from the controls before the candidate run.
+  - The final dossier records the original 10-warm-up result on the final candidate. If that run fails, G5 stays open until the owner decides the protocol; the threshold is never widened after a failure.
+- **npm audit.** `npm run test:packages` reports 4 findings (2 moderate, 2 high), all in dependencies of `@earendil-works/pi-coding-agent@0.85`:
+  - nested `undici` 8.0.0–8.10.1, with no fix available;
+  - `brace-expansion` 4.0.0–5.0.11.
+  The published `5.17.0` baseline has the same findings. This is a required, pre-existing failure. It is **not waived**. Fixing it needs separate owner consent to change the SDK, dependency or lockfile.
+- **Commands**, from the repository root on native Windows (`cmd`/PowerShell): `npm ci`, `npm run check`, `npm run acceptance`, `npm run test:packages -- <artifact dir>`, the serial required-browser suite and `node scripts/trajectory-semantic-map-acceptance.mjs --out <dir>` (both in [developers.html#browser-checks](../developers.html#browser-checks)), and `node scripts/demo-trajectory-semantic-map.mjs [--auto]`. The dossier records the exact invocations, exit codes and counts.
+
+| Gate / phase | Status at this entry (final numbers in the dossier) |
+| --- | --- |
+| W0 baseline and inventory | Done. Inherited dirty and untracked work preserved and hashed; officially published baseline `v5.17.0` `b86636786a097fedbcf64747579aa8f8ff59d1bb`. |
+| W1–W2 / G1–G2 Windows toolchain and runtime | Windows native: run on the final candidate (see dossier). Linux: **not executed**; WSL has no Linux Node or Chrome. Live Herdr panes: **unverified**. |
+| W3 / G3 framing | Implemented with regressions; included in the final suites. |
+| W4 / G4 versioned URLs and byte coherence | Implemented. Behavior: 404 for a missing, duplicate, bad or stale `v`; 503 when bytes no longer match the build; explicit Retry in the page. Included in the final suites and the packed A/B smoke. |
+| W5 / G5 browser, lifecycle, p95, 10 minutes, heap | Windows: required-browser suite and acceptance harness on the final candidate; the original 10-warm-up heap result is in the dossier. Linux: **not executed**. |
+| V0-D visible delivery | `--auto` screenshots and walkthrough regenerated on the final candidate; manual command as above. **Owner feedback pending.** |
+| W6 / G6 distribution | Three fresh tarballs, installed-consumer smokes and rollback on Windows. **`npm audit` FAIL, blocking, not waived.** |
+| W7 / G7 matrix | `check.yml` matrix **configured, not executed** (no remote run was triggered). |
+| W8 docs and dossier | README, CHANGELOG, `llm.md`, subagents and developers guides, this entry, and the local dossier. E4 is **not** closed. |
+| W9 / G8 deploy | **Not authorized.** Destination and channel are undecided. |
+
+- **Owner approvals still needed:**
+  - how to resolve the audit findings (SDK, dependency or lockfile change, or an explicit exception);
+  - a Linux execution environment, or a CI run;
+  - a decision on the heap protocol, if the original 10-warm-up run did not pass;
+  - feedback on V0-D;
+  - the W9 destination.
+  Enhanced H0–H7 stays deferred.
+
 ## Official baseline source and packaging contracts
 
 | Contract | Observed official source | Consequence for later review |

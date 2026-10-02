@@ -76,10 +76,11 @@ IF EXIST "%dp0%\node.exe" (SET "_prog=%dp0%\node.exe") ELSE (SET "_prog=node")
 "%_prog%" "%dp0%\pi entry.mjs" %*
 `);
   else {
-    writeFileSync(shim.replace(/\\.cmd$/i, ""), `#!/usr/bin/env node
+    // POSIX npm bins are executable Node files named without an extension; strip `.cmd` (not a backslash) here.
+    writeFileSync(shim.replace(/\.cmd$/i, ""), `#!/usr/bin/env node
 import { writeFileSync } from 'node:fs'; writeFileSync(process.env.PI_LAUNCH_CAPTURE, JSON.stringify(process.argv.slice(2))); process.exitCode = Number(process.env.PI_LAUNCH_EXIT);
 `);
-    chmodSync(shim.replace(/\\.cmd$/i, ""), 0o755);
+    chmodSync(shim.replace(/\.cmd$/i, ""), 0o755);
   }
   const originalPath = process.env.PATH;
   const originalAgentDir = process.env.PI_CODING_AGENT_DIR;

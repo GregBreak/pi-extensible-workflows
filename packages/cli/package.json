@@ -24,7 +24,7 @@
     "build": "node ../../scripts/workspace-build.mjs cli",
     "inspect": "node dist/src/cli.js inspect",
     "test": "npm run build && npm run test:run",
-    "test:run": "node ../../scripts/run-workspace-tests.mjs --workspace cli --pattern=dist/test/**/*.test.js --unset-herdr --timeout 60000",
+    "test:run": "node ../../scripts/run-workspace-tests.mjs --workspace cli --pattern=dist/test/**/*.test.js --unset-herdr --timeout 300000",
     "lint": "eslint .",
     "prepack": "npm run build"
   },

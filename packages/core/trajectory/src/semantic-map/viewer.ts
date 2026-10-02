@@ -14,6 +14,14 @@ function start(): void {
     render(snapshot) {
       const graph = adaptSemanticSnapshot(snapshot);
       renderer.render(graph);
+      const root = graph.nodes.find((node) => node.kind === "workflow" && node.sourceRef === graph.scope.targetId);
+      const name = root?.label ?? graph.scope.targetId;
+      document.title = `${name} — Session Semantic Map`;
+      document.querySelector(".header h1")?.replaceChildren(document.createTextNode(name));
+      const target = document.getElementById("semantic-map-target");
+      if (target) target.textContent = `${name} · ${graph.scope.targetKind} ${graph.scope.targetId}`;
+      const loading = document.getElementById("semantic-map-loading");
+      if (loading) loading.hidden = true;
       const notice = document.getElementById("semantic-map-completeness");
       if (notice) notice.textContent = graph.completeness.partial ? `Partial graph — ${graph.completeness.reasons.join("; ")}` : `Complete within available metadata — ${String(graph.nodes.length)} nodes`;
       return graph;
@@ -23,6 +31,11 @@ function start(): void {
   window.SemanticMap = api;
   const diagram = document.querySelector(".diagram-container");
   if (diagram && !document.getElementById("semantic-map-completeness")) {
+    const target = document.createElement("p");
+    target.id = "semantic-map-target";
+    target.className = "semantic-map-completeness";
+    target.textContent = "Waiting for the selected workflow/session";
+    diagram.prepend(target);
     const notice = document.createElement("p");
     notice.id = "semantic-map-completeness";
     notice.className = "semantic-map-completeness";

@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
-import { chmodSync, copyFileSync, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+// Recursive fixture copies use the promise API: Node 22's native cpSync crashes or writes mis-encoded paths on Windows when a path is non-ASCII.
+import { cp } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { basename, delimiter, dirname, join, sep } from "node:path";
@@ -50,6 +52,17 @@ function writePackageShim(source: string, destination: string): void {
   copyFileSync(join(source, "package.json"), join(destination, "package.json"));
   const implementation = join(source, "dist", "index.js");
   writeFileSync(join(destination, "dist", "index.js"), `export * from ${JSON.stringify(pathToFileURL(implementation).href)};`);
+}
+
+// Engine copies live outside the workspace, so their runtime dependency closure is installed beside them the way npm would;
+// otherwise resolution depends on whatever node_modules happen to exist above the temporary directory.
+const ENGINE_RUNTIME_PACKAGES = ["acorn", "minimatch", "brace-expansion", "balanced-match", "typebox"] as const;
+async function installEngineDependencies(modules: string): Promise<void> {
+  const workspaceNodeModules = join(process.cwd(), "../../node_modules");
+  mkdirSync(modules, { recursive: true });
+  await cp(join(process.cwd(), "../core"), join(modules, "pi-extensible-workflows"), { recursive: true });
+  for (const name of ENGINE_RUNTIME_PACKAGES) await cp(join(workspaceNodeModules, name), join(modules, name), { recursive: true });
+  for (const name of ["pi-coding-agent", "pi-ai", "pi-tui"]) writePackageShim(join(workspaceNodeModules, "@earendil-works", name), join(modules, "@earendil-works", name));
 }
 
 function fixture(): { root: string; cwd: string; agentDir: string; settingsPath: string } {
@@ -615,8 +628,8 @@ void test("exported launchers are executable and delegate unchanged arguments", 
   mkdirSync(fallbackCli, { recursive: true });
   const agentNodeModules = join(paths.agentDir, "npm", "node_modules");
   const workspaceNodeModules = join(process.cwd(), "../../node_modules");
-  cpSync(join(process.cwd(), "../core"), join(agentNodeModules, "pi-extensible-workflows"), { recursive: true });
-  for (const name of ["acorn", "minimatch", "typebox"]) cpSync(join(workspaceNodeModules, name), join(agentNodeModules, name), { recursive: true });
+  await cp(join(process.cwd(), "../core"), join(agentNodeModules, "pi-extensible-workflows"), { recursive: true });
+  for (const name of ["acorn", "minimatch", "typebox"]) await cp(join(workspaceNodeModules, name), join(agentNodeModules, name), { recursive: true });
   const agentPackages = join(agentNodeModules, "@earendil-works");
   for (const name of ["pi-coding-agent", "pi-ai", "pi-tui"]) writePackageShim(join(workspaceNodeModules, "@earendil-works", name), join(agentPackages, name));
   const externalPackages = join(agentNodeModules, "@earendil-works");
@@ -972,7 +985,8 @@ void test("portable bundle setup resolves an external runtime, launches, and fai
   const piRoot = join(root, "node_modules", "@earendil-works", "pi-coding-agent");
   mkdirSync(join(agentDir, "npm", "node_modules", "@piewf"), { recursive: true });
   mkdirSync(join(piRoot, "dist", "core", "tools"), { recursive: true });
-  cpSync(process.cwd(), join(agentDir, "npm", "node_modules", "@piewf/cli"), { recursive: true });
+  await cp(process.cwd(), join(agentDir, "npm", "node_modules", "@piewf/cli"), { recursive: true });
+  await installEngineDependencies(join(agentDir, "npm", "node_modules"));
   const piPackage = join(process.cwd(), "../../node_modules", "@earendil-works", "pi-coding-agent");
   writeFileSync(join(piRoot, "dist", "index.js"), `export * from ${JSON.stringify(pathToFileURL(join(piPackage, "dist", "index.js")).href)};`);
   writeFileSync(join(piRoot, "dist", "core", "tools", "index.js"), `export * from ${JSON.stringify(pathToFileURL(join(piPackage, "dist", "core", "tools", "index.js")).href)};`);
@@ -1021,9 +1035,9 @@ void test("portable bundle setup resolves an external runtime, launches, and fai
   const state = readCliTestBundleState(statePath);
   state.engine = "0.0.0";
   writeFileSync(statePath, JSON.stringify(state));
-  assert.match(launchFailure(join(bundle, "e2e")), /Bundle setup is missing or stale/);
+  assert.match(launchFailure(bundle), /Bundle setup is missing or stale/);
   const piMismatch = await create("pi-mismatch", { roles: [], aliases: [], tools: [], commands: [], environment: [] }, ">=0.81.0 <0.82.0");
-  assert.match(launchFailure(join(piMismatch, "pi-mismatch")), /Bundle requires Pi >=0\.81\.0 <0\.82\.0; found 0\.82\.0/);
+  assert.match(launchFailure(piMismatch), /Bundle requires Pi >=0\.81\.0 <0\.82\.0; found 0\.82\.0/);
   const builtinTools = await create("builtin-tools", { roles: [], aliases: [], tools: ["grep", "find", "ls"], commands: [], environment: [] });
   runBundleFileSync(builtinTools, ["setup", "--yes"], { env: environment, encoding: "utf8" });
   const skillSource = join(root, "selected-skill");
@@ -1036,9 +1050,9 @@ void test("portable bundle setup resolves an external runtime, launches, and fai
   runBundleFileSync(skillBundle, ["setup", "--yes"], { env: environment, encoding: "utf8" });
   assert.equal(runBundleFileSync(skillBundle, ["7"], { env: environment, encoding: "utf8" }).trim(), "7");
   const missingCommand = await create("missing-command", { roles: [], aliases: [], tools: [], commands: ["bundle-command-that-is-not-installed"], environment: [] });
-  assert.match(runFailure(join(missingCommand, "missing-command")), /Missing required external command/);
+  assert.match(runFailure(missingCommand), /Missing required external command/);
   const missingAlias = await create("missing-alias", { roles: [], aliases: ["missing-model"], tools: [], commands: [], environment: [] });
-  assert.match(runFailure(join(missingAlias, "missing-alias")), /Required model alias is unknown/);
+  assert.match(runFailure(missingAlias), /Required model alias is unknown/);
   const missingEnvironment = await create("missing-environment", { roles: [], aliases: [], tools: [], commands: [], environment: ["BUNDLE_REQUIRED_ENV"] });
   const environmentFailure = setupResult(missingEnvironment);
   assert.notEqual(environmentFailure.status, 0);
@@ -1065,7 +1079,8 @@ void test("portable bundle setup installs a missing compatible engine and fails 
   writeFileSync(join(piRoot, "dist", "index.js"), `export * from ${JSON.stringify(pathToFileURL(join(piPackage, "dist", "index.js")).href)};`);
   writeFileSync(join(piRoot, "dist", "core", "tools", "index.js"), `export * from ${JSON.stringify(pathToFileURL(join(piPackage, "dist", "core", "tools", "index.js")).href)};`);
   writeFileSync(join(piRoot, "package.json"), JSON.stringify({ name: "@earendil-works/pi-coding-agent", version: "0.80.9" }));
-  const piSource = `import { copyFileSync, cpSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+  const piSource = `import { copyFileSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { cp } from "node:fs/promises";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 const args = process.argv.slice(2);
@@ -1075,14 +1090,16 @@ else if (process.env.BUNDLE_INSTALL_MODE === "fail") { console.error("fake insta
 else {
   const target = join(process.env.PI_CODING_AGENT_DIR, "npm", "node_modules", "@piewf", "cli");
   rmSync(target, { recursive: true, force: true });
-  cpSync(process.env.BUNDLE_ENGINE_SOURCE, target, { recursive: true });
+  await cp(process.env.BUNDLE_ENGINE_SOURCE, target, { recursive: true });
   rmSync(join(target, "node_modules"), { recursive: true, force: true });
   const modules = join(target, "node_modules");
   mkdirSync(modules, { recursive: true });
-  cpSync(process.env.BUNDLE_CORE_SOURCE, join(modules, "pi-extensible-workflows"), { recursive: true });
+  await cp(process.env.BUNDLE_CORE_SOURCE, join(modules, "pi-extensible-workflows"), { recursive: true });
   const sourceNodeModules = join(process.env.BUNDLE_CORE_SOURCE, "..", "..", "node_modules");
-  cpSync(join(sourceNodeModules, "acorn"), join(modules, "acorn"), { recursive: true });
-  cpSync(join(sourceNodeModules, "minimatch"), join(modules, "minimatch"), { recursive: true });
+  await cp(join(sourceNodeModules, "acorn"), join(modules, "acorn"), { recursive: true });
+  await cp(join(sourceNodeModules, "minimatch"), join(modules, "minimatch"), { recursive: true });
+  await cp(join(sourceNodeModules, "brace-expansion"), join(modules, "brace-expansion"), { recursive: true });
+  await cp(join(sourceNodeModules, "balanced-match"), join(modules, "balanced-match"), { recursive: true });
   mkdirSync(join(modules, "@earendil-works"), { recursive: true });
   const installNodePackageShim = (source, destination) => {
     mkdirSync(join(destination, "dist"), { recursive: true });
@@ -1091,7 +1108,7 @@ else {
     writeFileSync(join(destination, "dist", "index.js"), "export * from " + JSON.stringify(pathToFileURL(implementation).href) + ";");
   };
   installNodePackageShim(process.env.BUNDLE_AGENT_SOURCE, join(modules, "@earendil-works", "pi-coding-agent"));
-  cpSync(process.env.BUNDLE_TYPEBOX_SOURCE, join(modules, "typebox"), { recursive: true });
+  await cp(process.env.BUNDLE_TYPEBOX_SOURCE, join(modules, "typebox"), { recursive: true });
   installNodePackageShim(process.env.BUNDLE_PI_AI_SOURCE, join(modules, "@earendil-works", "pi-ai"));
   installNodePackageShim(process.env.BUNDLE_PI_TUI_SOURCE, join(modules, "@earendil-works", "pi-tui"));
   if (process.env.BUNDLE_INSTALL_MODE === "incompatible") writeFileSync(join(target, "package.json"), JSON.stringify({ name: "@piewf/cli", version: "3.0.0" }));

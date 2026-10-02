@@ -117,7 +117,8 @@
       relationTypes: Array.from(new Set(edges.map(function (edge) { return edge.getAttribute("data-edge-type"); }))),
       routeDisabledInEmbed: Archify.routeProbe.begin() === false && Archify.routeProbe.active() === null,
       viewBox: svg.getAttribute("viewBox"),
-      camera: Archify.view.state()
+      camera: Archify.view.state(),
+      viewBox: svg.getAttribute("viewBox")
     };
   }
   function send(type, data) { if (port) port.postMessage(Object.assign({ type: type, sequence: ++sequence }, data || {})); }
@@ -145,25 +146,25 @@
     port.onmessage = function (message) {
       var action = message.data?.action;
       if (action === "metrics") send("metrics", metrics());
-      else if (action === "status") { const before = metrics(); const oldStroke = getComputedStyle(svg.querySelector('[data-node-id="tool-call"] rect')).stroke; setStatus(); send("status", { before: before, after: metrics(), oldStroke: oldStroke, newStroke: getComputedStyle(svg.querySelector('[data-node-id="tool-call"] rect')).stroke, statusText: svg.querySelector('[data-node-id="tool-call"] .semantic-map-profile-status').textContent }); }
+      else if (action === "status") { var before = metrics(); var oldStroke = getComputedStyle(svg.querySelector('[data-node-id="tool-call"] rect')).stroke; setStatus(); send("status", { before: before, after: metrics(), oldStroke: oldStroke, newStroke: getComputedStyle(svg.querySelector('[data-node-id="tool-call"] rect')).stroke, statusText: svg.querySelector('[data-node-id="tool-call"] .semantic-map-profile-status').textContent }); }
       else if (action === "insert") {
-        const next = { nodes: graph.nodes.concat([{ id: "new-task", label: "New task", kind: "task", status: "pending" }]), edges: graph.edges.concat([{ id: "new-dependency", from: "workflow", to: "new-task", relation: "dependency" }]) };
-        const state = render(next, true);
+        var next = { nodes: graph.nodes.concat([{ id: "new-task", label: "New task", kind: "task", status: "pending" }]), edges: graph.edges.concat([{ id: "new-dependency", from: "workflow", to: "new-task", relation: "dependency" }]) };
+        var state = render(next, true);
         send("insert", { previousView: state.previousView, currentView: state.currentView, metrics: metrics() });
       } else if (action === "select") send("select", findAndSelect("new-task"));
       else if (action === "remove-selected") {
-        const before = metrics();
-        const next = { nodes: graph.nodes.filter(function (node) { return node.id !== "new-task"; }), edges: graph.edges.filter(function (edge) { return edge.from !== "new-task" && edge.to !== "new-task"; }) };
-        const state = render(next, true);
+        var before = metrics();
+        var next = { nodes: graph.nodes.filter(function (node) { return node.id !== "new-task"; }), edges: graph.edges.filter(function (edge) { return edge.from !== "new-task" && edge.to !== "new-task"; }) };
+        var state = render(next, true);
         Archify.finder.open();
         var input = document.getElementById("node-finder-input"); input.value = "new-task"; input.dispatchEvent(new Event("input", { bubbles: true }));
         var searchCount = document.querySelectorAll("#node-finder-results .node-finder-result").length;
         Archify.finder.close({ restoreFocus: false });
         send("remove-selected", { before: before, after: metrics(), previousView: state.previousView, currentView: state.currentView, active: Archify.focus.active(), finderCount: Archify.finder.count, searchCount: searchCount, focusMarkers: svg.querySelectorAll("[data-focus-selected], [data-focus-match], [data-focus-active]").length, chipHidden: document.querySelector(".focus-chip").hidden, hash: location.hash, route: Archify.routeProbe.active() });
       } else if (action === "pan-zoom") {
-        const before = Archify.view.state();
+        var before = Archify.view.state();
         Archify.view.zoomIn();
-        const afterZoom = Archify.view.state();
+        var afterZoom = Archify.view.state();
         Archify.view.centerAt(700, 500, { scale: 1.5, instant: true });
         send("pan-zoom", { before: before, afterZoom: afterZoom, afterPan: Archify.view.state() });
       }

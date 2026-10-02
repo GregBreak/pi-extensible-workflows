@@ -1,10 +1,10 @@
 <!DOCTYPE html>
-<html lang="en" data-theme="dark" data-preset="[VISUAL PRESET]">
+<html data-embed="true" lang="en" data-theme="dark" data-preset="classic">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta name="generator" content="archify 2.17.0-dev.1">
-  <title>Trajectory Semantic Map Architecture Diagram</title>
+  <title>Trajectory Session Semantic Map</title>
   <script>
     // Resolve the theme before first paint so light-preference users don't
     // see a dark flash. The toolbar script below re-applies with UI state.
@@ -4973,8 +4973,8 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
       svg [data-node-id], svg [data-edge-from], svg [data-detail], svg [data-detail-anchor], svg [data-legend-hit], svg { transition: none !important; }
     }
   </style>
-  <link rel="stylesheet" href="/semantic-map.css">
-  <meta name="semantic-map-build" content="b7c1b35b8cf5e468">
+  <meta name="semantic-map-style" content="/semantic-map.css?v=a7ea51ffcc89aeb8">
+  <meta name="semantic-map-build" content="a7ea51ffcc89aeb8">
 </head>
 <body>
   <!-- Toolbar: theme, live visual style, trace motion, presentation stage, and export.
@@ -5083,9 +5083,9 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
            data-preset-badge-blueprint="{{i18n:viewer.preset.badge.blueprint}}"
            data-preset-badge-editorial="{{i18n:viewer.preset.badge.editorial}}">
         <div class="pulse-dot"></div>
-        <h1>Trajectory Semantic Map Architecture</h1>
+        <h1>Selected workflow/session</h1>
       </div>
-      <p class="subtitle">[Subtitle description]</p>
+      <p class="subtitle">Live metadata from the selected Trajectory target</p>
     </div>
 
     <!-- ARCHIFY:GUIDED_VIEWS_DATA -->
@@ -5134,8 +5134,7 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
     <div class="diagram-container" data-detail-level="read"
          data-preset-badge-editorial-plate="{{i18n:viewer.preset.badge.editorialPlate}}">
       <!-- ARCHIFY:SVG_SLOT_START -->
-      <svg viewBox="0 0 1000 680" role="img" aria-label="Trajectory Semantic Map architecture diagram">
-        <!-- Definitions -->
+      <svg viewBox="0 0 1000 680" role="img" aria-label="Selected workflow/session semantic map">
         <defs>
           <marker id="arrowhead" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
             <polygon points="0 0, 10 3.5, 0 7" class="m-default" />
@@ -5153,134 +5152,10 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
             <path d="M 40 0 L 0 0 0 40" class="c-grid" stroke-width="0.5"/>
           </pattern>
         </defs>
-
-        <!-- Background Grid -->
         <rect width="100%" height="100%" fill="url(#grid)" />
-
-        <!-- =================================================================
-             COMPONENT EXAMPLES — use CSS classes, not inline fill/stroke
-             (so theme toggle works). Each box pattern:
-               1. opaque mask rect (.c-mask) to hide arrows underneath
-               2. styled rect (.c-<type>) with 1.5px stroke
-               3. text (.t-primary / .t-muted)
-             ================================================================= -->
-
-        <!-- External/Generic Component -->
-        <rect x="30" y="280" width="100" height="50" rx="6" class="c-mask"/>
-        <rect x="30" y="280" width="100" height="50" rx="6" class="c-external" stroke-width="1.5"/>
-        <text x="80" y="300" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">Users</text>
-        <text x="80" y="316" class="t-muted" font-size="9" text-anchor="middle">Browser/Mobile</text>
-
-        <!-- Security Component -->
-        <rect x="30" y="80" width="100" height="60" rx="6" class="c-mask"/>
-        <rect x="30" y="80" width="100" height="60" rx="6" class="c-security" stroke-width="1.5"/>
-        <text x="80" y="105" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">Auth Provider</text>
-        <text x="80" y="121" class="t-muted" font-size="9" text-anchor="middle">OAuth 2.0</text>
-
-        <!-- Region/Cloud Boundary -->
-        <rect x="160" y="40" width="820" height="620" rx="12" class="c-region" stroke-width="1"/>
-        <text x="172" y="58" class="t-cloud" font-size="10" font-weight="600">AWS Region: us-west-2</text>
-
-        <!-- AWS/Cloud Service -->
-        <rect x="200" y="280" width="110" height="50" rx="6" class="c-mask"/>
-        <rect x="200" y="280" width="110" height="50" rx="6" class="c-cloud" stroke-width="1.5"/>
-        <text x="255" y="300" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">CloudFront</text>
-        <text x="255" y="316" class="t-muted" font-size="9" text-anchor="middle">CDN</text>
-
-        <!-- Multi-line AWS Component (S3 Buckets example) -->
-        <rect x="200" y="380" width="110" height="100" rx="6" class="c-mask"/>
-        <rect x="200" y="380" width="110" height="100" rx="6" class="c-cloud" stroke-width="1.5"/>
-        <text x="255" y="400" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">S3 Buckets</text>
-        <text x="255" y="420" class="t-muted" font-size="8" text-anchor="middle">&bull; bucket-one</text>
-        <text x="255" y="434" class="t-muted" font-size="8" text-anchor="middle">&bull; bucket-two</text>
-        <text x="255" y="448" class="t-muted" font-size="8" text-anchor="middle">&bull; bucket-three</text>
-        <text x="255" y="466" class="t-cloud" font-size="7" text-anchor="middle">OAI Protected</text>
-
-        <!-- Security Group (dashed boundary). NOTE: extra vertical headroom
-             so the sg-name label has ~12px breathing room above the inner
-             component. Pattern: boundary y = inner.y - 30, h = inner.h + 50. -->
-        <rect x="350" y="250" width="120" height="100" rx="8" class="c-security-group" stroke-width="1"/>
-        <text x="358" y="268" class="t-security" font-size="8">sg-name :port</text>
-
-        <!-- Component inside security group -->
-        <rect x="360" y="280" width="100" height="50" rx="6" class="c-mask"/>
-        <rect x="360" y="280" width="100" height="50" rx="6" class="c-cloud" stroke-width="1.5"/>
-        <text x="410" y="300" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">Load Balancer</text>
-        <text x="410" y="316" class="t-muted" font-size="9" text-anchor="middle">HTTPS :443</text>
-
-        <!-- Backend Component -->
-        <rect x="510" y="280" width="110" height="50" rx="6" class="c-mask"/>
-        <rect x="510" y="280" width="110" height="50" rx="6" class="c-backend" stroke-width="1.5"/>
-        <text x="565" y="300" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">API Server</text>
-        <text x="565" y="316" class="t-muted" font-size="9" text-anchor="middle">FastAPI :8000</text>
-
-        <!-- Database Component -->
-        <rect x="700" y="280" width="120" height="50" rx="6" class="c-mask"/>
-        <rect x="700" y="280" width="120" height="50" rx="6" class="c-database" stroke-width="1.5"/>
-        <text x="760" y="300" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">Database</text>
-        <text x="760" y="316" class="t-muted" font-size="9" text-anchor="middle">PostgreSQL</text>
-
-        <!-- Frontend Component -->
-        <rect x="200" y="520" width="200" height="110" rx="8" class="c-mask"/>
-        <rect x="200" y="520" width="200" height="110" rx="8" class="c-frontend" stroke-width="1.5"/>
-        <text x="300" y="545" class="t-primary" font-size="12" font-weight="600" text-anchor="middle">Frontend</text>
-        <text x="300" y="565" class="t-muted" font-size="9" text-anchor="middle">React + TypeScript</text>
-        <text x="300" y="580" class="t-muted" font-size="9" text-anchor="middle">Additional detail</text>
-        <text x="300" y="595" class="t-muted" font-size="9" text-anchor="middle">More info</text>
-        <text x="300" y="615" class="t-frontend" font-size="8" text-anchor="middle">domain.example.com</text>
-
-        <!-- =================================================================
-             ARROW EXAMPLES (use .a-* classes and stroke-width on the line)
-             ================================================================= -->
-
-        <!-- Standard arrow with label -->
-        <line x1="130" y1="305" x2="198" y2="305" class="a-default" stroke-width="1.5" marker-end="url(#arrowhead)"/>
-        <text x="164" y="299" class="t-muted" font-size="9" text-anchor="middle">HTTPS</text>
-
-        <!-- Simple arrow (no label) -->
-        <line x1="310" y1="305" x2="358" y2="305" class="a-default" stroke-width="1.5" marker-end="url(#arrowhead)"/>
-
-        <!-- Vertical arrow -->
-        <line x1="255" y1="330" x2="255" y2="378" class="a-default" stroke-width="1.5" marker-end="url(#arrowhead)"/>
-        <text x="270" y="358" class="t-muted" font-size="9">OAI</text>
-
-        <!-- Straight arrows between services -->
-        <line x1="460" y1="305" x2="508" y2="305" class="a-default" stroke-width="1.5" marker-end="url(#arrowhead)"/>
-        <line x1="620" y1="305" x2="698" y2="305" class="a-default" stroke-width="1.5" marker-end="url(#arrowhead)"/>
-        <text x="655" y="299" class="t-muted" font-size="9">TLS</text>
-
-        <!-- Curved dashed path for auth/security flow -->
-        <path d="M 80 140 L 80 200 Q 80 220 100 220 L 200 220 Q 220 220 220 240 L 220 278"
-              class="a-security" stroke-width="1.5"/>
-        <text x="150" y="210" class="t-security" font-size="8">JWT + PKCE</text>
-
-        <!-- =================================================================
-             LEGEND
-             ================================================================= -->
-        <text x="720" y="70" class="t-primary" font-size="10" font-weight="600">Legend</text>
-
-        <rect x="720" y="82" width="16" height="10" rx="2" class="c-frontend" stroke-width="1"/>
-        <text x="742" y="90" class="t-muted" font-size="8">Frontend</text>
-
-        <rect x="720" y="98" width="16" height="10" rx="2" class="c-backend" stroke-width="1"/>
-        <text x="742" y="106" class="t-muted" font-size="8">Backend</text>
-
-        <rect x="720" y="114" width="16" height="10" rx="2" class="c-cloud" stroke-width="1"/>
-        <text x="742" y="122" class="t-muted" font-size="8">Cloud Service</text>
-
-        <rect x="720" y="130" width="16" height="10" rx="2" class="c-database" stroke-width="1"/>
-        <text x="742" y="138" class="t-muted" font-size="8">Database</text>
-
-        <rect x="720" y="146" width="16" height="10" rx="2" class="c-security" stroke-width="1"/>
-        <text x="742" y="154" class="t-muted" font-size="8">Security</text>
-
-        <line x1="720" y1="168" x2="736" y2="168" class="a-security" stroke-width="1"/>
-        <text x="742" y="171" class="t-muted" font-size="8">Auth Flow</text>
-
-        <rect x="720" y="178" width="16" height="10" rx="2" class="c-security-group" stroke-width="1"/>
-        <text x="742" y="186" class="t-muted" font-size="8">Security Group</text>
       </svg>
       <!-- ARCHIFY:SVG_SLOT_END -->
+      <p id="semantic-map-loading" role="status">Waiting for selected workflow/session data…</p>
       <p class="intent-trace-status no-print" id="intent-trace-status" role="status" aria-live="polite" aria-atomic="true"></p>
       <div class="share-chapter-cue no-print" id="share-chapter-cue" hidden role="status" aria-live="polite">
         <div class="share-chapter-index">
@@ -14937,6 +14812,53 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
       }
     });
   </script>
-  <script src="/semantic-map.js"></script>
+  <meta name="semantic-map-script" content="/semantic-map.js?v=a7ea51ffcc89aeb8">
+<script data-semantic-map-bootstrap>
+(()=>{
+  const channelName="pi-workflows-semantic-map",maxBytes=512*1024,noncePattern=/^[0-9a-f]{64}$/,buildPattern=/^[0-9a-f]{16}$/,idPattern=/^sm-(?:[0-9a-f]{2})+$/;
+  const encoder=new TextEncoder(),htmlBuild=document.querySelector('meta[name="semantic-map-build"]')?.content;
+  let initialized=false,viewerReady=false,port,nonce,instance,epoch=-1,lastSequence=0,nodeIds=new Set();
+  const record=value=>value!==null&&typeof value==="object"&&!Array.isArray(value);
+  const bytes=value=>{try{return encoder.encode(JSON.stringify(value)).byteLength}catch{return maxBytes+1}};
+  const send=value=>{if(!port)return;try{port.postMessage({...value,version:1,nonce,instance})}catch{}};
+  const request=(event,type)=>{if(!viewerReady||!nodeIds.size)return;const target=event.target instanceof Element?event.target.closest("[data-node-id]"):null;const id=target?.getAttribute("data-node-id");if(typeof id!=="string"||id.length>4096||!idPattern.test(id)||!nodeIds.has(id))return;send({type,nodeId:id,epoch})};
+  const accept=event=>{
+    const data=event.data;
+    if(initialized||event.source!==parent||!record(data)||Object.keys(data).length!==6||Object.keys(data).some(key=>!["channel","type","version","build","nonce","instance"].includes(key))||data.channel!==channelName||data.type!=="bootstrap"||!Number.isSafeInteger(data.version)||typeof data.build!=="string"||!buildPattern.test(data.build)||typeof data.nonce!=="string"||!noncePattern.test(data.nonce)||typeof data.instance!=="string"||!noncePattern.test(data.instance)||event.ports.length!==1)return;
+    initialized=true;nonce=data.nonce;instance=data.instance;port=event.ports[0];window.removeEventListener("message",accept);
+    if(data.version!==1||data.build!==htmlBuild){port.start();send({type:"ready",build:htmlBuild});return}
+    const svg=document.querySelector(".diagram-container > svg");
+    const click=event=>request(event,"select"),detail=event=>request(event,"detail"),key=event=>{if(event.key==="Enter"&&event.shiftKey){event.preventDefault();request(event,"detail")}else if(event.key==="Enter"||event.key===" "){event.preventDefault();request(event,"select")}};
+    port.onmessage=message=>{
+      const next=message.data;
+      if(!record(next)||bytes(next)>maxBytes||next.version!==1||next.nonce!==nonce||next.instance!==instance)return;
+      if(next.type==="initialize"){
+        if(viewerReady||Object.keys(next).some(key=>!["type","version","build","nonce","instance","script","style"].includes(key))||next.build!==htmlBuild||typeof next.script!=="string"||typeof next.style!=="string"||encoder.encode(next.script).byteLength>128*1024||encoder.encode(next.style).byteLength>32*1024)return;
+        try{
+          // The private parent port supplies only verified, build-owned same-origin assets; snapshots are never code.
+          const style=document.createElement("style");style.textContent=next.style;document.head.append(style);
+          const script=document.createElement("script");script.textContent=next.script;document.body.append(script);
+          const viewer=window.SemanticMap,build=viewer&&typeof viewer.build==="string"&&buildPattern.test(viewer.build)?viewer.build:null;
+          if(!viewer){send({type:"ready",build:htmlBuild,error:"initialization"});return}
+          if(viewer.version!==1||build!==htmlBuild){send({type:"ready",build});return}
+          viewerReady=true;if(svg){svg.addEventListener("click",click);svg.addEventListener("dblclick",detail);svg.addEventListener("keydown",key)}
+          send({type:"ready",build});
+        }catch{send({type:"ready",build:htmlBuild,error:"initialization"})}
+        return;
+      }
+      if(!viewerReady)return;
+      if(next.type==="theme"){if(Object.keys(next).some(key=>!["type","version","nonce","instance","theme"].includes(key))||next.theme!=="light"&&next.theme!=="dark")return;document.documentElement.setAttribute("data-theme",next.theme);return}
+      if(next.type!=="snapshot"||Object.keys(next).some(key=>!["type","version","nonce","instance","sequence","epoch","snapshot"].includes(key))||!Number.isSafeInteger(next.sequence)||next.sequence<=lastSequence||!Number.isSafeInteger(next.epoch)||!record(next.snapshot))return;
+      lastSequence=next.sequence;const seq=next.sequence,incomingEpoch=next.epoch;
+      if(incomingEpoch<epoch){send({type:"ack",sequence:seq,epoch:incomingEpoch,nodeIds:Array.from(nodeIds)});return}
+      try{const graph=window.SemanticMap.render(next.snapshot);epoch=incomingEpoch;nodeIds=new Set(graph.nodes.map(node=>node.id));send({type:"ack",sequence:seq,epoch:incomingEpoch,nodeIds:Array.from(nodeIds)})}catch(error){send({type:"ack",sequence:seq,epoch:incomingEpoch,error:(error instanceof Error?error.message:"render failed").slice(0,200)})}
+    };
+    port.start();
+  };
+  window.addEventListener("message",accept);
+  const announce=()=>{if(typeof htmlBuild==="string"&&buildPattern.test(htmlBuild))parent.postMessage({channel:channelName,type:"viewer-listening",version:1,build:htmlBuild},"*")};
+  if(document.readyState==="loading")document.addEventListener("DOMContentLoaded",announce,{once:true});else announce();
+})();
+</script>
 </body>
 </html>

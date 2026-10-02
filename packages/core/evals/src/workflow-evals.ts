@@ -536,6 +536,24 @@ interface PiRunResult { exitCode: number | null; timedOut: boolean; budgetExceed
 const reportProgress = (message: string): void => { if (process.env.PI_WORKFLOW_EVAL_PROGRESS === "1") process.stderr.write(`[eval] ${message}\n`); };
 
 
+const EVAL_PROFILE_KEYS = new Set(["HOME", "USERPROFILE", "APPDATA", "LOCALAPPDATA", "PI_CODING_AGENT_DIR", "TEMP", "TMP", "TMPDIR"]);
+/**
+ * Environment for an eval child rooted in the disposable case `home`: every casing of the profile/temp keys and all
+ * Herdr pane variables are dropped so a child can neither read the operator profile nor drive the caller's Herdr pane.
+ */
+function evalChildEnvironment(home: string, base: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+  const temp = join(home, "tmp");
+  const appData = join(home, "AppData", "Roaming");
+  const localAppData = join(home, "AppData", "Local");
+  for (const directory of [temp, appData, localAppData]) mkdirSync(directory, { recursive: true });
+  const env: NodeJS.ProcessEnv = {};
+  for (const [key, value] of Object.entries(base)) {
+    const name = key.toUpperCase();
+    if (!EVAL_PROFILE_KEYS.has(name) && !name.startsWith("HERDR_")) env[key] = value;
+  }
+  return { ...env, HOME: home, USERPROFILE: home, APPDATA: appData, LOCALAPPDATA: localAppData, PI_CODING_AGENT_DIR: join(home, ".pi", "agent"), TEMP: temp, TMP: temp, TMPDIR: temp };
+}
+
 async function killProcessGroup(child: ChildProcess): Promise<boolean> {
   let terminated = await terminateProcessTree(child, "SIGTERM");
   await new Promise((resolve) => setTimeout(resolve, 100));
@@ -550,7 +568,7 @@ async function runPiCapture(input: CaptureCaseInput, cwd: string, home: string, 
   args.push("--print", input.case.prompt);
   const controller = new AbortController();
   let timedOut = false; let budgetExceeded = false; let processGroupTerminated = false; let stoppedIntentionally = false; let workflowCallSeen = false; let streamCost = 0; let lineBuffer = ""; let stderr = ""; let spawnError: string | undefined; let killPromise: Promise<boolean> | undefined;
-  const child = spawnExecutable(input.piCommand ?? process.env.PI_WORKFLOW_EVAL_PI ?? "pi", args, { cwd, env: { ...process.env, HOME: home, USERPROFILE: home, PI_CODING_AGENT_DIR: join(home, ".pi", "agent"), PI_CODING_AGENT_SESSION_DIR: sessionDir, PI_OFFLINE: "1", PI_SKIP_VERSION_CHECK: "1", PI_TELEMETRY: "0" }, detached: process.platform !== "win32", stdio: ["ignore", "pipe", "pipe"], signal: controller.signal });
+  const child = spawnExecutable(input.piCommand ?? process.env.PI_WORKFLOW_EVAL_PI ?? "pi", args, { cwd, env: { ...evalChildEnvironment(home), PI_CODING_AGENT_SESSION_DIR: sessionDir, PI_OFFLINE: "1", PI_SKIP_VERSION_CHECK: "1", PI_TELEMETRY: "0" }, detached: process.platform !== "win32", stdio: ["ignore", "pipe", "pipe"], signal: controller.signal });
   const requestKill = (): Promise<boolean> => { killPromise ??= killProcessGroup(child); return killPromise; };
   const stopIntentionally = (): void => { if (stoppedIntentionally) return; stoppedIntentionally = true; void requestKill().then((terminated) => { processGroupTerminated ||= terminated; controller.abort(); }); };
   const isValidatedCapture = (value: unknown): boolean => {
@@ -638,7 +656,7 @@ async function runSemanticJudge(input: CaptureCaseInput, calls: readonly Capture
   args.push("--thinking", "off", "--print", semanticJudgePrompt(input.case, calls, cwd, home));
   const controller = new AbortController();
   let timedOut = false; let budgetExceeded = false; let processGroupTerminated = false; let stderr = ""; let spawnError: string | undefined; let killPromise: Promise<boolean> | undefined; let lineBuffer = ""; let raw = ""; let usage = emptyAccounting();
-  const child = spawnExecutable(input.piCommand ?? process.env.PI_WORKFLOW_EVAL_PI ?? "pi", args, { cwd, env: { ...process.env, HOME: home, USERPROFILE: home, PI_CODING_AGENT_DIR: join(home, ".pi", "agent"), PI_CODING_AGENT_SESSION_DIR: sessionDir, PI_OFFLINE: "1", PI_SKIP_VERSION_CHECK: "1", PI_TELEMETRY: "0" }, detached: process.platform !== "win32", stdio: ["ignore", "pipe", "pipe"], signal: controller.signal });
+  const child = spawnExecutable(input.piCommand ?? process.env.PI_WORKFLOW_EVAL_PI ?? "pi", args, { cwd, env: { ...evalChildEnvironment(home), PI_CODING_AGENT_SESSION_DIR: sessionDir, PI_OFFLINE: "1", PI_SKIP_VERSION_CHECK: "1", PI_TELEMETRY: "0" }, detached: process.platform !== "win32", stdio: ["ignore", "pipe", "pipe"], signal: controller.signal });
   const requestKill = (): Promise<boolean> => { killPromise ??= killProcessGroup(child); return killPromise; };
   const inspectLine = (line: string) => {
     try {
@@ -811,7 +829,7 @@ export async function runIsolatedProcess(payload: unknown, options: IsolatedProc
   try {
     writeFileSync(inputPath, `${JSON.stringify({ payload, outputPath })}\n`, { mode: 0o600 });
     const controller = new AbortController();
-    const child = spawn(process.execPath, [options.childPath, inputPath], { cwd: root, env: { ...process.env, ...options.env, HOME: join(root, "home"), USERPROFILE: join(root, "home"), PI_CODING_AGENT_DIR: join(root, "home", ".pi", "agent"), PI_CODING_AGENT_SESSION_DIR: join(root, "sessions"), PI_WORKFLOW_EVAL_CASE_ROOT: root }, detached: process.platform !== "win32", stdio: ["ignore", "ignore", "pipe"], signal: controller.signal });
+    const child = spawn(process.execPath, [options.childPath, inputPath], { cwd: root, env: { ...evalChildEnvironment(join(root, "home"), { ...process.env, ...options.env }), PI_CODING_AGENT_SESSION_DIR: join(root, "sessions"), PI_WORKFLOW_EVAL_CASE_ROOT: root }, detached: process.platform !== "win32", stdio: ["ignore", "ignore", "pipe"], signal: controller.signal });
     let timedOut = false; let processGroupTerminated = false; let stderr = ""; let processError: string | undefined; let killPromise: Promise<boolean> | undefined;
     child.stderr.on("data", (chunk: Buffer) => { const text = chunk.toString(); stderr = `${stderr}${text}`.slice(-64_000); options.onStderr?.(text); });
     child.once("error", (error: Error) => { processError = error.message; });

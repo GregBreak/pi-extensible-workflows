@@ -6,6 +6,8 @@ import { adaptSemanticSnapshot } from "../src/semantic-map/adapter.js";
 
 void test("Semantic Map bridge accepts only bounded protocol envelopes and scoped node identifiers", () => {
   assert.equal(isValidSemanticMapBridgeEnvelope({ type: "ready", version: 1, nonce: "a".repeat(64), instance: "b".repeat(64) }), true);
+  assert.equal(isValidSemanticMapBridgeEnvelope({ type: "ready", version: 1, build: "0123456789abcdef", nonce: "a".repeat(64), instance: "b".repeat(64) }), true);
+  assert.equal(isValidSemanticMapBridgeEnvelope({ type: "ack", version: 1, build: "0123456789abcdef", nonce: "a".repeat(64), instance: "b".repeat(64) }), false, "only readiness carries the viewer build");
   assert.equal(isValidSemanticMapBridgeEnvelope({ type: "ready", version: 2, nonce: "a".repeat(64), instance: "b".repeat(64) }), false);
   assert.equal(isValidSemanticMapBridgeEnvelope({ type: "bootstrap", version: 1 }), false);
   assert.equal(isValidSemanticMapBridgeEnvelope({ type: "ack", version: 1, padding: "x".repeat(512 * 1024) }), false);
@@ -52,7 +54,9 @@ void test("Semantic Map parent projection is bounded, explicit, and excludes pro
   assert.ok(projectedAgents);
   const projectedAgent = projectedAgents[0];
   assert.ok(projectedAgent);
-  assert.equal(projectedAgent.toolCalls?.[0]?.id, "cached-call");
+  assert.deepEqual(projectedAgent.events?.map((event) => [event.kind, event.id ?? event.name]), [["assistant", "Assistant"], ["tool", "cached-call"]], "cached transcript becomes a kinds-only event sequence");
+  assert.equal(projectedAgent.toolCalls?.length, 0, "recorded calls are only a fallback when no transcript is cached");
+  assert.equal(projectedAgents[1]?.toolCalls?.length, 0);
   assert.equal(projectedAgent.attemptDetails?.[0]?.error?.code, "RETRY");
   const serialized = JSON.stringify(projection.snapshot);
   assert.ok(new TextEncoder().encode(serialized).byteLength <= 512 * 1024);
@@ -66,6 +70,8 @@ void test("Semantic Map parent projection is bounded, explicit, and excludes pro
   assert.equal(graph.completeness.partial, true);
   assert.ok(graph.nodes.some((node) => node.kind === "tool-call"));
   assert.ok(graph.edges.some((edge) => edge.kind === "retry"));
+  assert.equal(agentNode.attempts, 2); assert.equal(agentNode.failedAttempts, 1);
+  assert.ok(!graph.nodes.some((node) => node.kind === "agent" && node.label.includes("attempt")), "retries are drawn on one card, never as copies");
   assert.equal(projectCurrentSemanticSnapshot({ ...context, selected: () => undefined }), undefined);
 });
 
@@ -97,13 +103,13 @@ void test("Semantic Map parent projection bounds dense metadata and indexes at m
   assert.ok(denseAgents);
   assert.ok(denseAgents.length > 0 && denseAgents.length <= 16);
   assert.ok((projection.snapshot.relations?.length ?? 0) <= 8);
-  assert.equal(projection.snapshot.run?.agents?.[0]?.toolCalls?.length, 16);
+  assert.equal(projection.snapshot.run?.agents?.[0]?.events?.length, 48);
   assert.ok(projection.nodes.size <= 500);
   assert.equal(projection.nodeCount, projection.nodes.size);
   const graph = adaptSemanticSnapshot(projection.snapshot);
   assert.equal(graph.nodes.length, projection.nodeCount, JSON.stringify({ inputBytes: new TextEncoder().encode(JSON.stringify(projection.snapshot)).byteLength, projectedAgents: denseAgents.length, graphNodes: graph.nodes.length, nodeIndex: projection.nodeCount, partial: graph.completeness.reasons }));
   for (const node of graph.nodes) assert.deepEqual(projection.nodes.get(node.id), { id: node.id, kind: node.kind, sourceRef: node.sourceRef });
   assert.ok(new TextEncoder().encode(JSON.stringify(projection.snapshot)).byteLength <= 512 * 1024);
-  assert.ok(projection.snapshot.partial?.reasons?.includes("Cached tool-call projection bounded"));
+  assert.ok(projection.snapshot.partial?.reasons?.includes("Transcript event projection bounded"));
   assert.ok(projection.snapshot.partial?.reasons?.includes("Recorded relation list bounded"));
 });

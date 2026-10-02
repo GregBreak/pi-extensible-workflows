@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { execFileSync, spawn } from "node:child_process";
+import { execFileSync, spawn, type ChildProcess } from "node:child_process";
 import { createServer, type ServerResponse } from "node:http";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
@@ -8,6 +8,7 @@ import { join } from "node:path";
 import test from "node:test";
 import { exportTrajectoryRunHtml } from "../index.js";
 import { createTrajectoryServer } from "../src/server.js";
+import { SEMANTIC_MAP_BUILD_STAMP } from "../src/semantic-map-assets.js";
 import { RunStore } from "../../src/persistence.js";
 import { createLaunchSnapshot } from "../../src/utils.js";
 import type { PersistedRun } from "../../src/persistence.js";
@@ -733,7 +734,7 @@ void test("Pinned Archify E0 sandbox spike bounded profile proves external asset
 
 void test("Trajectory lazy Semantic Map uses an opaque private bridge and existing transcript RPC", { skip: !browserPath, timeout: 120_000 }, async () => {
   const source = readFileSync(new URL("../src/assets/index.html", import.meta.url), "utf8");
-  const bootstrap = `<script>(function(){const C=window.MessageChannel,addFrameListener=HTMLIFrameElement.prototype.addEventListener,get=crypto.getRandomValues.bind(crypto),send=MessagePort.prototype.postMessage,handler=Object.getOwnPropertyDescriptor(MessagePort.prototype,'onmessage');window.__NativeMessageChannel=C;window.__holdMapBootstrap=true;HTMLIFrameElement.prototype.addEventListener=function(type,listener,options){if(type==='load'&&this.getAttribute('sandbox')==='allow-scripts'&&window.__holdMapBootstrap){window.__deferredMapLoad={frame:this,callback:listener};return Reflect.apply(addFrameListener,this,[type,event=>{window.__deferredMapEvent=event},options])}return Reflect.apply(addFrameListener,this,[type,listener,options])};window.__channels=0;window.__mapTokens=[];window.__themes=[];window.__mapSnapshots=[];window.__heldAcks=[];window.__holdMapAck=true;crypto.getRandomValues=function(bytes){get(bytes);window.__mapTokens.push(Array.from(bytes,value=>value.toString(16).padStart(2,'0')).join(''));return bytes};MessagePort.prototype.postMessage=function(data,...transfer){if(data&&data.type==='theme')window.__themes.push(data.theme);if(data&&data.type==='snapshot')window.__mapSnapshots.push(data);return Reflect.apply(send,this,[data,...transfer])};window.MessageChannel=function(){window.__channels++;const channel=new C(),port=channel.port1;Object.defineProperty(port,'onmessage',{configurable:true,get(){return handler.get.call(this)},set(callback){handler.set.call(this,event=>{if(window.__holdMapAck&&event.data&&event.data.type==='ack'){window.__heldAcks.push(event);return}callback(event)})}});return window.__mapChannel=channel};window.__sockets=[];class S{constructor(){this.readyState=1;this.listeners={};this.sent=[];window.__sockets.push(this);window.__socket=this;setTimeout(()=>this.emit('open',{}),0)}addEventListener(t,f){(this.listeners[t] ||= []).push(f)}send(v){this.sent.push(JSON.parse(v))}close(){this.readyState=3}emit(t,e){for(const f of this.listeners[t]||[])f(e)}}window.WebSocket=S})();</script>`;
+  const bootstrap = `<script>(function(){const C=window.MessageChannel,addWindowListener=window.addEventListener,get=crypto.getRandomValues.bind(crypto),send=MessagePort.prototype.postMessage,handler=Object.getOwnPropertyDescriptor(MessagePort.prototype,'onmessage');window.__NativeMessageChannel=C;window.__holdMapBootstrap=true;window.addEventListener=function(type,listener,options){if(type==='message'&&window.__holdMapBootstrap){return Reflect.apply(addWindowListener,this,[type,event=>{if(event.data?.type==='viewer-listening'){window.__deferredMapLoad={frame:document.querySelector('#semantic-map-host iframe'),callback:listener};window.__deferredMapEvent=event;if(window.__holdMapBootstrap)return}listener(event)},options])}return Reflect.apply(addWindowListener,this,[type,listener,options])};window.__channels=0;window.__mapTokens=[];window.__themes=[];window.__mapSnapshots=[];window.__heldAcks=[];window.__holdMapAck=true;crypto.getRandomValues=function(bytes){get(bytes);window.__mapTokens.push(Array.from(bytes,value=>value.toString(16).padStart(2,'0')).join(''));return bytes};MessagePort.prototype.postMessage=function(data,...transfer){if(data&&data.type==='theme')window.__themes.push(data.theme);if(data&&data.type==='snapshot')window.__mapSnapshots.push(data);return Reflect.apply(send,this,[data,...transfer])};window.MessageChannel=function(){window.__channels++;const channel=new C(),port=channel.port1;Object.defineProperty(port,'onmessage',{configurable:true,get(){return handler.get.call(this)},set(callback){handler.set.call(this,event=>{if(window.__holdMapAck&&event.data&&event.data.type==='ack'){window.__heldAcks.push(event);return}callback(event)})}});return window.__mapChannel=channel};window.__sockets=[];class S{constructor(){this.readyState=1;this.listeners={};this.sent=[];window.__sockets.push(this);window.__socket=this;setTimeout(()=>this.emit('open',{}),0)}addEventListener(t,f){(this.listeners[t] ||= []).push(f)}send(v){this.sent.push(JSON.parse(v))}close(){this.readyState=3}emit(t,e){for(const f of this.listeners[t]||[])f(e)}}window.WebSocket=S})();</script>`;
   const html = source.replace(/\x20{2}<script>\r?\n\x20{4}const defaultRunLayout/, `${bootstrap}\n  <script>\n    const defaultRunLayout`);
   assert.notEqual(html, source);
   const paths = ["/index.html", "/marked.min.js", "/morphdom.min.js", "/prism.min.js", "/semantic-map.html", "/semantic-map.js", "/semantic-map.css"];
@@ -764,7 +765,7 @@ void test("Trajectory lazy Semantic Map uses an opaque private bridge and existi
       await page.evaluate(clickExpression("#semantic-map-tab"));
       await waitFor(page, "document.querySelector('#semantic-map-host iframe') && window.__deferredMapLoad");
       await delay(120);
-      const wrongSourceScript = "const channel=new MessageChannel();parent.__attackPort=channel.port1;parent.__attackMessages=[];channel.port1.onmessage=event=>parent.__attackMessages.push(event.data);const pending=parent.__deferredMapLoad;const [nonce,instance]=parent.__mapTokens;pending.frame.contentWindow.postMessage({channel:'pi-workflows-semantic-map',type:'bootstrap',version:1,nonce,instance},'*',[channel.port2]);";
+      const wrongSourceScript = "const channel=new MessageChannel();parent.__attackPort=channel.port1;parent.__attackMessages=[];channel.port1.onmessage=event=>parent.__attackMessages.push(event.data);const pending=parent.__deferredMapLoad;const [nonce,instance]=parent.__mapTokens;pending.frame.contentWindow.postMessage({channel:'pi-workflows-semantic-map',type:'bootstrap',version:1,build:'" + SEMANTIC_MAP_BUILD_STAMP + "',nonce,instance},'*',[channel.port2]);";
       await page.evaluate(`(()=>{const attacker=document.createElement('iframe');document.body.append(attacker);const script=attacker.contentDocument.createElement('script');script.textContent=${JSON.stringify(wrongSourceScript)};attacker.contentDocument.body.append(script);window.__attackFrame=attacker})()`);
       await waitFor(page, "Boolean(window.__attackPort)");
       await delay(100);
@@ -791,16 +792,19 @@ void test("Trajectory lazy Semantic Map uses an opaque private bridge and existi
       assert.ok(["light", "dark"].includes(String(await page.evaluate("window.__themes.at(-1)"))));
       assert.ok(requests.some((item) => item.path === "/semantic-map.html" && !item.referrer));
       assert.ok(requests.some((item) => item.path === "/semantic-map.js") && requests.some((item) => item.path === "/semantic-map.css"));
-      await page.evaluate(`(()=>{const duplicate=new window.__NativeMessageChannel();window.__duplicateMessages=[];duplicate.port1.onmessage=event=>window.__duplicateMessages.push(event.data);duplicate.port1.start();const [nonce,instance]=window.__mapTokens;document.querySelector('#semantic-map-host iframe').contentWindow.postMessage({channel:'pi-workflows-semantic-map',type:'bootstrap',version:1,nonce,instance},'*',[duplicate.port2]);window.__duplicatePort=duplicate.port1})()`);
+      await page.evaluate(`(()=>{const duplicate=new window.__NativeMessageChannel();window.__duplicateMessages=[];duplicate.port1.onmessage=event=>window.__duplicateMessages.push(event.data);duplicate.port1.start();const [nonce,instance]=window.__mapTokens;document.querySelector('#semantic-map-host iframe').contentWindow.postMessage({channel:'pi-workflows-semantic-map',type:'bootstrap',version:1,build:'${SEMANTIC_MAP_BUILD_STAMP}',nonce,instance},'*',[duplicate.port2]);window.__duplicatePort=duplicate.port1})()`);
       await delay(100);
       assert.equal(await page.evaluate("window.__duplicateMessages.length"), 0, "duplicate bootstrap cannot initialize a second private port");
       const nodeId = `sm-${Buffer.from(JSON.stringify(["publisher", "run", "run", "", "agent", "agent"]), "utf8").toString("hex")}`;
       assert.deepEqual(await page.evaluate("[window.__mapTokens.length,typeof window.__mapChannel.port1.onmessage]"), [2, "function"]);
+      const transcriptBaseline = Number(await page.evaluate("window.__socket.sent.filter((item)=>item.type==='ui:transcript').length"));
       await page.evaluate(`(()=>{const p=window.__mapChannel.port1.onmessage,[nonce,instance]=window.__mapTokens;const base={type:'detail',version:1,nonce,instance,epoch:1,nodeId:${JSON.stringify(nodeId)}};for(const attack of [{...base,nonce:'0'.repeat(64)},{...base,version:99},{...base,instance:'0'.repeat(64)},{...base,nodeId:'sm-00'},{...base,type:'action'},{...base,padding:'x'.repeat(512*1024)}])p({data:attack});return window.__socket.sent.filter((item)=>item.type==='ui:transcript').length})()`);
-      assert.equal(await page.evaluate("window.__socket.sent.filter((item)=>item.type==='ui:transcript').length"), 0, "invalid, out-of-scope, control, and oversized requests are rejected");
+      // The open map prefetches the bounded transcripts it draws (kinds only) through the same RPC; attacks add nothing.
+      assert.equal(await page.evaluate("window.__socket.sent.filter((item)=>item.type==='ui:transcript').length"), transcriptBaseline, "invalid, out-of-scope, control, and oversized requests are rejected");
+      assert.ok(await page.evaluate("window.__socket.sent.filter((item)=>item.type==='ui:transcript').every((item)=>item.agentId==='agent')"), "map transcript requests stay inside the selected run");
       await page.evaluate(`(()=>{const [nonce,instance]=window.__mapTokens;window.__mapChannel.port1.onmessage({data:{type:'detail',version:1,nonce,instance,epoch:1,nodeId:${JSON.stringify(nodeId)}}})})()`);
       await waitFor(page, "document.body.dataset.view==='agent' && window.__socket.sent.some((item)=>item.type==='ui:transcript')");
-      assert.equal(await page.evaluate("window.__socket.sent.filter((item)=>item.type==='ui:transcript').length"), 1);
+      assert.ok(Number(await page.evaluate("window.__socket.sent.filter((item)=>item.type==='ui:transcript').length")) >= Math.max(1, transcriptBaseline));
       assert.equal(await page.evaluate("window.__sockets.length"), 1);
       await page.evaluate("document.getElementById('run-crumb').click()"); await waitFor(page, "document.body.dataset.view==='run'");
       await page.evaluate(clickExpression("#timeline-tab")); await waitFor(page, "document.querySelectorAll('#semantic-map-host iframe').length===0");
@@ -831,6 +835,208 @@ void test("Trajectory lazy Semantic Map uses an opaque private bridge and existi
   } finally { await new Promise<void>((resolve) => { server.close(() => { resolve(); }); }); }
 });
 
+
+async function waitLong(page: Devtools, expression: string, timeoutMs: number): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (await page.evaluate(expression)) return;
+    await delay(50);
+  }
+  throw new Error(`Chrome condition did not become true within ${String(timeoutMs)} ms: ${expression}`);
+}
+async function pressEnter(page: Devtools): Promise<void> {
+  await page.command("Input.dispatchKeyEvent", { type: "keyDown", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13, nativeVirtualKeyCode: 13, text: "\r" });
+  await page.command("Input.dispatchKeyEvent", { type: "keyUp", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13, nativeVirtualKeyCode: 13 });
+}
+const MAP_PORT_HARNESS = "<script>(function(){const send=MessagePort.prototype.postMessage;window.__mapSnapshots=[];window.__themes=[];MessagePort.prototype.postMessage=function(data,...rest){if(data&&data.type==='snapshot')window.__mapSnapshots.push(data);if(data&&data.type==='theme')window.__themes.push(data.theme);return Reflect.apply(send,this,[data,...rest])};window.__sockets=[];class S{constructor(){this.readyState=1;this.listeners={};this.sent=[];window.__sockets.push(this);window.__socket=this;setTimeout(()=>this.emit('open',{}),0)}addEventListener(t,f){(this.listeners[t] ||= []).push(f)}send(v){this.sent.push(JSON.parse(v))}close(){this.readyState=3}emit(t,e){for(const f of this.listeners[t]||[])f(e)}}window.WebSocket=S})();</script>";
+
+void test("Semantic Map initializes session data when opaque child subresources are blocked and fails explicitly when parent assets are unavailable", { skip: !browserPath, timeout: 120_000 }, async () => {
+  const source = readFileSync(new URL("../src/assets/index.html", import.meta.url), "utf8");
+  const html = source.replace(/\x20{2}<script>\r?\n\x20{4}const defaultRunLayout/, `${MAP_PORT_HARNESS}\n  <script>\n    const defaultRunLayout`);
+  const viewerHtml = readFileSync(new URL("../src/assets/semantic-map.html", import.meta.url), "utf8");
+  const files = new Map<string, RouteBody>([["/index.html", html], ...["marked.min.js", "morphdom.min.js", "prism.min.js", "semantic-map.js", "semantic-map.css"].map((name) => [`/${name}`, readFileSync(new URL(`../src/assets/${name}`, import.meta.url))] as [string, RouteBody])]);
+  let blockParentAsset = true;
+  const requested: { path: string; destination: string }[] = [];
+  const server = createServer((request, response) => {
+    const path = new URL(request.url ?? "/", "http://127.0.0.1").pathname;
+    const destination = request.headers["sec-fetch-dest"] ?? "";
+    requested.push({ path, destination });
+    response.setHeader("cache-control", "no-store");
+    const child = path === "/semantic-map.html";
+    response.setHeader("content-security-policy", child ? "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:; font-src data:; connect-src 'none'; frame-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'" : "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; frame-src 'self'; connect-src 'self'; object-src 'none'");
+    // Deterministically reproduce an opaque-frame resource blocker. Parent-origin fetch remains allowed.
+    if (path.startsWith("/semantic-map.") && !child && (destination === "script" || destination === "style" || blockParentAsset)) { response.writeHead(403).end("blocked resource"); return; }
+    const body = child ? viewerHtml : files.get(path);
+    if (body === undefined) { response.writeHead(404).end(); return; }
+    response.setHeader("content-type", path.endsWith(".js") ? "application/javascript" : path.endsWith(".css") ? "text/css" : "text/html");
+    response.end(body);
+  });
+  await new Promise<void>((resolve, reject) => { server.once("error", reject); server.listen(0, "127.0.0.1", resolve); });
+  const address = server.address(); assert.ok(address && typeof address !== "string");
+  try {
+    await withChrome(`http://127.0.0.1:${String(address.port)}/index.html`, async (page, browser) => {
+      await waitFor(page, "Boolean(window.__socket)");
+      await page.evaluate(`window.__socket.emit('message',{data:${JSON.stringify(JSON.stringify(makeState({ status: "pending" }, "running")))}})`);
+      await waitFor(page, "Boolean(document.querySelector('.workflow-head'))");
+      await page.evaluate(clickExpression("#semantic-map-tab"));
+      await waitFor(page, "/assets could not load/.test(document.getElementById('semantic-map-status').textContent)");
+      assert.equal(await page.evaluate("document.querySelectorAll('#semantic-map-host iframe').length"), 0);
+      assert.equal(await page.evaluate("window.__mapSnapshots.length"), 0, "no session data before readiness");
+      assert.doesNotMatch(viewerHtml.slice(viewerHtml.indexOf("<!-- ARCHIFY:SVG_SLOT_START -->"), viewerHtml.indexOf("<!-- ARCHIFY:SVG_SLOT_END -->")), /AWS Region|CloudFront|Auth Provider/);
+      blockParentAsset = false;
+      await page.evaluate(clickExpression("#semantic-map-retry"));
+      await waitFor(page, "document.getElementById('semantic-map-status').textContent.startsWith('Partial graph')");
+      const context = await semanticMapContext(page, browser);
+      const evaluate = (expression: string): Promise<unknown> => context.connection.evaluateInContext(context.contextId, expression, context.sessionId);
+      assert.equal(await evaluate("Boolean(window.SemanticMap)"), true);
+      assert.equal(await evaluate("document.getElementById('semantic-map-loading').hidden"), true);
+      assert.match(String(await evaluate("document.getElementById('semantic-map-target').textContent")), /run/);
+      assert.ok(Number(await evaluate("document.querySelectorAll('.semantic-map-node').length")) > 0);
+      assert.equal(await page.evaluate("document.querySelector('#semantic-map-host iframe').getAttribute('sandbox')"), "allow-scripts");
+      assert.equal(requested.some((request) => request.path.startsWith("/semantic-map.") && ["script", "style"].includes(request.destination)), false, "opaque child makes no external asset requests");
+      await page.evaluate(clickExpression("#timeline-tab"));
+      assert.equal(await page.evaluate("document.querySelectorAll('#semantic-map-host iframe').length"), 0);
+    });
+  } finally { await new Promise<void>((resolve) => { server.close(() => { resolve(); }); }); }
+});
+
+void test("Trajectory Semantic Map rejects an incompatible viewer protocol or build before run data, retries only explicitly, suspends while hidden, and is keyboard-reachable from agent and subagent focus", { skip: !browserPath, timeout: 180_000 }, async () => {
+  const source = readFileSync(new URL("../src/assets/index.html", import.meta.url), "utf8");
+  const html = source.replace(/\x20{2}<script>\r?\n\x20{4}const defaultRunLayout/, `${MAP_PORT_HARNESS}\n  <script>\n    const defaultRunLayout`);
+  assert.notEqual(html, source);
+  const viewerJs = readFileSync(new URL("../src/assets/semantic-map.js", import.meta.url), "utf8");
+  const viewerHtml = readFileSync(new URL("../src/assets/semantic-map.html", import.meta.url), "utf8");
+  const childSend = "port.postMessage({...value,version:1,nonce,instance})";
+  const viewerBuild = `build:"${SEMANTIC_MAP_BUILD_STAMP}"`;
+  assert.equal(viewerHtml.split(childSend).length, 2, "the deployed inline child bridge has one private-port sender");
+  assert.equal(viewerJs.split(viewerBuild).length, 2, "the deployed viewer reports one build stamp");
+  // A child speaking protocol 2 and a viewer of another build are refused before any run data.
+  const variants = { protocol: viewerJs, build: viewerJs.replace(viewerBuild, 'build:"0123456789abcdef"'), ok: viewerJs };
+  let variant: keyof typeof variants = "protocol";
+  const statics = new Map<string, RouteBody>([["/index.html", html], ...["marked.min.js", "morphdom.min.js", "prism.min.js", "semantic-map.html", "semantic-map.css"].map((name) => [`/${name}`, readFileSync(new URL(`../src/assets/${name}`, import.meta.url))] as [string, RouteBody])]);
+  const requests: string[] = [];
+  const server = createServer((request, response) => {
+    const url = new URL(request.url || "/", "http://127.0.0.1"); requests.push(url.pathname + url.search);
+    const body = url.pathname === "/semantic-map.js" ? variants[variant] : url.pathname === "/semantic-map.html" && variant === "protocol" ? viewerHtml.replace(childSend, "port.postMessage({...value,version:2,nonce,instance})") : statics.get(url.pathname);
+    if (body === undefined) { response.writeHead(404); response.end(); return; }
+    const child = url.pathname.startsWith("/semantic-map.");
+    response.setHeader("content-security-policy", child ? "default-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src data:; font-src data:; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'" : "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; connect-src 'self'; frame-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'");
+    response.setHeader("content-type", url.pathname.endsWith(".js") ? "text/javascript" : url.pathname.endsWith(".css") ? "text/css" : "text/html"); response.end(body);
+  });
+  await new Promise<void>((resolve, reject) => { server.once("error", reject); server.listen(0, "127.0.0.1", resolve); });
+  const address = server.address(); assert.ok(address && typeof address !== "string");
+  const mapRequests = (): string[] => requests.filter((path) => path.startsWith("/semantic-map."));
+  const stateWith = (agentState: "running" | "completed"): string => {
+    const state = makeState({ status: agentState === "completed" ? "available" : "pending" }, agentState);
+    const publisher = (state.publishers as CdpRecord[])[0] as CdpRecord;
+    publisher.subagents = [{ id: "sub-1", label: "Sub One", state: "running", attempts: 1, startedAt: 1, progress: { toolCalls: [{ id: "call-1", name: "read", state: "completed" }] } }];
+    return JSON.stringify(JSON.stringify(state));
+  };
+  const emit = (agentState: "running" | "completed"): string => `window.__socket.emit('message',{data:${stateWith(agentState)}})`;
+  try {
+    await withChrome(`http://127.0.0.1:${String(address.port)}/index.html`, async (page, browser) => {
+      await waitFor(page, "Boolean(window.__socket)");
+      await page.evaluate(emit("running"));
+      await waitFor(page, "Boolean(document.querySelector('.workflow-head'))");
+      assert.equal(await page.evaluate("document.getElementById('semantic-map-retry').hidden"), true);
+
+      // Protocol mismatch: visible reason, frame and port disposed, no snapshot ever sent.
+      await page.evaluate(clickExpression("#semantic-map-tab"));
+      await waitFor(page, "/protocol mismatch/.test(document.getElementById('semantic-map-status').textContent)");
+      assert.equal(await page.evaluate("document.querySelectorAll('#semantic-map-host iframe').length"), 0);
+      assert.equal(await page.evaluate("document.getElementById('semantic-map-retry').hidden"), false, "an explicit Retry is offered");
+      assert.equal(await page.evaluate("window.__mapSnapshots.length"), 0, "no run data reaches a viewer with another protocol");
+      const requestsAfterFailure = mapRequests().length;
+      assert.ok(mapRequests().every((path) => path.includes(`v=${SEMANTIC_MAP_BUILD_STAMP}`)), JSON.stringify(mapRequests()));
+      for (const agentState of ["completed", "running", "completed"] as const) { await page.evaluate(emit(agentState)); await delay(60); }
+      await delay(400);
+      assert.equal(await page.evaluate("document.querySelectorAll('#semantic-map-host iframe').length"), 0, "live updates never reopen a failed map");
+      assert.equal(mapRequests().length, requestsAfterFailure, "no asset request without an explicit retry");
+      assert.match(String(await page.evaluate("document.getElementById('semantic-map-status').textContent")), /protocol mismatch/);
+      await page.evaluate(clickExpression("#semantic-map-tab"));
+      await delay(200);
+      assert.equal(mapRequests().length, requestsAfterFailure, "re-selecting the already selected tab is not a hidden retry");
+
+      // Explicit Retry against a viewer of another build: refused again before data.
+      variant = "build";
+      await page.evaluate(clickExpression("#semantic-map-retry"));
+      await waitFor(page, "/build mismatch/.test(document.getElementById('semantic-map-status').textContent)");
+      assert.ok(mapRequests().length > requestsAfterFailure, "Retry loads a fresh viewer");
+      assert.equal(await page.evaluate("window.__mapSnapshots.length"), 0, "no run data reaches a viewer of another build");
+      assert.equal(await page.evaluate("document.querySelectorAll('#semantic-map-host iframe').length"), 0);
+      // Closing and reopening the tab is also explicit and gets a fresh instance, still refused.
+      await page.evaluate(clickExpression("#timeline-tab"));
+      assert.equal(await page.evaluate("document.getElementById('semantic-map-retry').hidden"), true);
+      await page.evaluate(clickExpression("#semantic-map-tab"));
+      await waitFor(page, "/build mismatch/.test(document.getElementById('semantic-map-status').textContent) && document.querySelectorAll('#semantic-map-host iframe').length===0");
+      assert.equal(await page.evaluate("window.__mapSnapshots.length"), 0);
+
+      // Recovery: the compatible viewer receives data only after an explicit Retry.
+      variant = "ok";
+      await page.evaluate(clickExpression("#semantic-map-retry"));
+      await waitFor(page, "document.getElementById('semantic-map-status').textContent.startsWith('Partial graph') && window.__mapSnapshots.length>=1");
+      assert.equal(await page.evaluate("document.getElementById('semantic-map-retry').hidden"), true);
+      assert.deepEqual(await page.evaluate("(()=>{const f=document.querySelector('#semantic-map-host iframe');return [f.getAttribute('sandbox'),f.sandbox.contains('allow-same-origin'),f.getAttribute('referrerpolicy')]})()"), ["allow-scripts", false, "no-referrer"]);
+
+      // Hidden page: no sends while hidden, however many updates arrive; visible again resyncs only the current state.
+      await delay(300);
+      const sentBeforeHide = Number(await page.evaluate("window.__mapSnapshots.length"));
+      await page.evaluate("Object.defineProperty(document, 'hidden', { configurable: true, get: () => true }); document.dispatchEvent(new Event('visibilitychange'))");
+      for (const agentState of ["running", "completed", "running"] as const) { await page.evaluate(emit(agentState)); await delay(120); }
+      await delay(400);
+      assert.equal(Number(await page.evaluate("window.__mapSnapshots.length")), sentBeforeHide, "a hidden page sends nothing to the viewer");
+      await page.evaluate("Object.defineProperty(document, 'hidden', { configurable: true, get: () => false }); document.dispatchEvent(new Event('visibilitychange'))");
+      await waitFor(page, `window.__mapSnapshots.length===${String(sentBeforeHide + 1)}`);
+      await delay(400);
+      assert.equal(Number(await page.evaluate("window.__mapSnapshots.length")), sentBeforeHide + 1, "visibility resyncs once with the current state, not the queued history");
+      assert.equal(await page.evaluate("window.__mapSnapshots.at(-1).snapshot.run.agents[0].state"), "running");
+
+      // Theme and reduced motion reach the opaque viewer only through its own media query and the private port.
+      const frame = await semanticMapContext(page, browser);
+      const reducedMotion = { features: [{ name: "prefers-reduced-motion", value: "reduce" }] };
+      await page.command("Emulation.setEmulatedMedia", reducedMotion);
+      // An out-of-process opaque frame is its own CDP target; the OS preference reaches it like any frame, emulation must be applied per target.
+      if (frame.sessionId) await browser.command("Emulation.setEmulatedMedia", reducedMotion, frame.sessionId);
+      const themesBefore = Number(await page.evaluate("window.__themes.length"));
+      await page.evaluate("document.querySelector('[data-theme-toggle]').click()");
+      await waitFor(page, `window.__themes.length>${String(themesBefore)}`);
+      const parentTheme = await page.evaluate("document.documentElement.dataset.theme");
+      assert.equal(await page.evaluate("window.__themes.at(-1)"), parentTheme);
+      const inFrame = (expression: string): Promise<unknown> => frame.connection.evaluateInContext(frame.contextId, expression, frame.sessionId);
+      for (let attempt = 0; attempt < 40 && await inFrame("document.documentElement.getAttribute('data-theme')") !== parentTheme; attempt += 1) await delay(25);
+      assert.equal(await inFrame("document.documentElement.getAttribute('data-theme')"), parentTheme, "the viewer applies the parent theme");
+      assert.equal(await inFrame("matchMedia('(prefers-reduced-motion: reduce)').matches"), true, "the viewer sees the reduced-motion preference");
+
+      // Keyboard: the focused agent's run map and the focused subagent's map are one Enter away from the detail view.
+      await page.evaluate("setView('agent')");
+      await waitFor(page, "document.body.dataset.view==='agent' && document.querySelectorAll('#semantic-map-host iframe').length>=0");
+      assert.equal(await page.evaluate("(()=>{const b=document.getElementById('focus-semantic-map');return b.tabIndex>=0 && b.offsetParent!==null})()"), true, "the focused-agent map control is keyboard focusable and visible");
+      await page.evaluate("document.getElementById('focus-semantic-map').focus()");
+      await pressEnter(page);
+      await waitFor(page, "document.body.dataset.view==='run' && document.getElementById('semantic-map-tab').getAttribute('aria-selected')==='true' && document.activeElement && document.activeElement.id==='semantic-map-tab' && document.getElementById('semantic-map-status').textContent.startsWith('Partial graph')");
+      assert.equal(await page.evaluate("window.__mapSnapshots.at(-1).snapshot.scope.targetKind"), "run");
+      await page.evaluate("document.querySelector('#sidebar [data-subagent]').click()");
+      await waitFor(page, "document.body.dataset.view==='subagent'");
+      await page.evaluate("document.getElementById('focus-semantic-map').focus()");
+      await pressEnter(page);
+      await waitLong(page, "document.body.dataset.view==='run' && document.activeElement && document.activeElement.id==='semantic-map-tab' && window.__mapSnapshots.at(-1).snapshot.scope.targetKind==='subagent' && document.getElementById('semantic-map-status').textContent.startsWith('Partial graph')", 5000);
+      assert.equal(await page.evaluate("window.__mapSnapshots.at(-1).snapshot.subagent.id"), "sub-1");
+      assert.equal(await page.evaluate("JSON.stringify(window.__mapSnapshots).includes('Inspect the fixture')"), false, "the subagent projection carries no prompt");
+
+      // Close before readiness and with a late callback: nothing is revived and no request follows.
+      await page.evaluate(clickExpression("#timeline-tab"));
+      await waitFor(page, "document.querySelectorAll('#semantic-map-host iframe').length===0");
+      await page.evaluate("document.getElementById('semantic-map-tab').click();document.getElementById('timeline-tab').click()");
+      const requestsAtClose = mapRequests().length;
+      await page.evaluate(emit("running"));
+      await delay(400);
+      assert.equal(await page.evaluate("document.querySelectorAll('#semantic-map-host iframe').length"), 0);
+      assert.equal(mapRequests().length, requestsAtClose, "a map closed before readiness makes no later request");
+      assert.equal(await page.evaluate("document.getElementById('semantic-map-status').textContent"), "");
+      assert.equal(await page.evaluate("window.__sockets.length"), 1, "the viewer never adds a socket");
+    });
+  } finally { await new Promise<void>((resolve) => { server.close(() => { resolve(); }); }); }
+});
 
 void test("Trajectory static export gives a live-only explanation without map requests", { skip: !browserPath, timeout: 120_000 }, async () => {
   const source = readFileSync(new URL("../src/assets/index.html", import.meta.url), "utf8");
@@ -883,7 +1089,7 @@ void test("Trajectory production routes load all three Semantic Map assets in an
       });
       assert.equal(await page.evaluate("performance.getEntriesByType('resource').some((entry) => entry.name.includes('semantic-map.'))"), false, "no map asset request occurs before activation");
       const nonce = "e".repeat(64), instance = "f".repeat(64);
-      await page.evaluate(`(()=>{const frame=document.createElement('iframe');frame.title='production route probe';frame.setAttribute('sandbox','allow-scripts');frame.setAttribute('referrerpolicy','no-referrer');frame.src='/semantic-map.html?embed=1&theme=dark';const channel=new MessageChannel();window.__productionMapMessages=[];window.__productionMapPort=channel.port1;channel.port1.onmessage=event=>window.__productionMapMessages.push(event.data);channel.port1.start();frame.addEventListener('load',()=>frame.contentWindow.postMessage({channel:'pi-workflows-semantic-map',type:'bootstrap',version:1,nonce:${JSON.stringify(nonce)},instance:${JSON.stringify(instance)}},'*',[channel.port2]),{once:true});window.__productionMapFrame=frame;document.getElementById('semantic-map-host').append(frame)})()`);
+      await page.evaluate(`(()=>{const frame=document.createElement('iframe');frame.title='production route probe';frame.setAttribute('sandbox','allow-scripts');frame.setAttribute('referrerpolicy','no-referrer');frame.src='/semantic-map.html?v=${SEMANTIC_MAP_BUILD_STAMP}&embed=1&theme=dark';const channel=new MessageChannel();window.__productionMapMessages=[];window.__productionMapPort=channel.port1;channel.port1.onmessage=event=>window.__productionMapMessages.push(event.data);channel.port1.start();const listen=async event=>{if(event.source!==frame.contentWindow||event.data?.type!=='viewer-listening')return;window.removeEventListener('message',listen);frame.contentWindow.postMessage({channel:'pi-workflows-semantic-map',type:'bootstrap',version:1,build:'${SEMANTIC_MAP_BUILD_STAMP}',nonce:${JSON.stringify(nonce)},instance:${JSON.stringify(instance)}},'*',[channel.port2]);const [script,style]=await Promise.all(['semantic-map.js','semantic-map.css'].map(name=>fetch('/'+name+'?v=${SEMANTIC_MAP_BUILD_STAMP}').then(response=>response.text())));channel.port1.postMessage({type:'initialize',version:1,build:'${SEMANTIC_MAP_BUILD_STAMP}',nonce:${JSON.stringify(nonce)},instance:${JSON.stringify(instance)},script,style})};window.addEventListener('message',listen);window.__productionMapFrame=frame;document.getElementById('semantic-map-host').append(frame)})()`);
       await waitFor(page, "window.__productionMapMessages.some((message) => message.type === 'ready')");
       assert.deepEqual(await page.evaluate("[window.__productionMapFrame.sandbox.contains('allow-scripts'),window.__productionMapFrame.sandbox.contains('allow-same-origin')]"), [true, false]);
       const snapshot = { scope: { publisherId: "publisher", targetKind: "run", targetId: "run" }, run: { id: "run", workflowName: "Production HTTP map", state: "running", agents: [{ id: "agent", name: "agent", state: "running", attempts: 1, attemptDetails: [], structuralPath: [], toolCalls: [] }] }, partial: { reasons: ["production route smoke"], omittedNodes: 0, omittedEdges: 0 } };
@@ -1215,5 +1421,139 @@ void test("Trajectory Semantic Map closes and reopens cleanly for 50 live browse
     publisher.close();
     server.closeAllConnections(); server.closeIdleConnections(); server.close(); server.unref();
     rmSync(root, { recursive: true, force: true });
+  }
+});
+
+const sha256 = (bytes: Buffer): string => createHash("sha256").update(bytes).digest("hex");
+/**
+ * Lays out the bundled server with its parent shell, libraries and canonical viewer assets like the installed package.
+ * With `stamp`, every file and the server's manifest are consistently re-stamped: a coherent build B of the same code.
+ */
+function installServerBuild(root: string, stamp?: string): string {
+  const parentAssets = join(root, "trajectory", "src", "assets"), viewerAssets = join(root, "trajectory", "assets");
+  mkdirSync(parentAssets, { recursive: true }); mkdirSync(viewerAssets, { recursive: true });
+  let server = readFileSync(new URL("../src/server.js", import.meta.url), "utf8");
+  const copy = (from: URL, to: string, restamp: boolean): void => {
+    const original = readFileSync(from);
+    if (!stamp || !restamp) { writeFileSync(to, original); return; }
+    const bytes = Buffer.from(original.toString("utf8").replaceAll(SEMANTIC_MAP_BUILD_STAMP, stamp), "utf8");
+    assert.equal(bytes.byteLength, original.byteLength, "re-stamping keeps each asset size");
+    assert.equal(server.split(sha256(original)).length, 2, "the server manifest names each asset digest once");
+    server = server.replace(sha256(original), sha256(bytes));
+    writeFileSync(to, bytes);
+  };
+  for (const name of ["marked.min.js", "morphdom.min.js", "prism.min.js", "favicon.png"]) copy(new URL(`../src/assets/${name}`, import.meta.url), join(parentAssets, name), false);
+  copy(new URL("../src/assets/index.html", import.meta.url), join(parentAssets, "index.html"), true);
+  for (const name of ["semantic-map.html", "semantic-map.js", "semantic-map.css"]) copy(new URL(`../assets/${name}`, import.meta.url), join(viewerAssets, name), true);
+  if (stamp) {
+    assert.equal(server.split(`"${SEMANTIC_MAP_BUILD_STAMP}"`).length, 2, "the server bundles one build stamp");
+    server = server.replace(`"${SEMANTIC_MAP_BUILD_STAMP}"`, `"${stamp}"`);
+  }
+  const serverPath = join(root, "trajectory", "src", "server.js");
+  writeFileSync(serverPath, server);
+  return serverPath;
+}
+async function startOwnedServer(serverPath: string, port: number, lock: string, fingerprint: string): Promise<ChildProcess> {
+  const child = spawn(process.execPath, [serverPath, "--port", String(port), "--lock", lock, "--fingerprint", fingerprint], { stdio: "ignore", windowsHide: true });
+  for (let attempt = 0; attempt < 200; attempt += 1) {
+    try {
+      const health = await (await fetch(`http://127.0.0.1:${String(port)}/health`, { signal: AbortSignal.timeout(300) })).json() as { pid?: unknown; fingerprint?: unknown };
+      if (health.pid === child.pid && health.fingerprint === fingerprint) return child;
+    } catch { /* The owned server is still starting. */ }
+    await delay(25);
+  }
+  child.kill();
+  throw new Error(`Owned Trajectory test server ${fingerprint} did not start`);
+}
+/** Stops only a server this test spawned, through its own process handle. */
+async function stopOwnedServer(child: ChildProcess | undefined): Promise<void> {
+  if (!child || child.exitCode !== null || child.signalCode !== null) return;
+  const exited = new Promise<void>((resolve) => { child.once("exit", () => { resolve(); }); });
+  child.kill();
+  await Promise.race([exited, delay(5000)]);
+}
+
+void test("Trajectory Semantic Map tab upgrade across real server builds fails visibly, never auto-reopens, and recovers explicitly", { skip: !browserPath, timeout: 240_000 }, async (t) => {
+  const rootA = mkdtempSync(join(tmpdir(), "trajectory-map-build-a-"));
+  const rootB = mkdtempSync(join(tmpdir(), "trajectory-map-build-b-"));
+  const stampB = "b0b1b2b3b4b5b6b7";
+  assert.notEqual(stampB, SEMANTIC_MAP_BUILD_STAMP);
+  const serverA = installServerBuild(rootA);
+  const serverB = installServerBuild(rootB, stampB);
+  const port = await availableLoopbackPort();
+  const base = `http://127.0.0.1:${String(port)}`;
+  const publisherId = "w4bridgeupgrade";
+  const run = semanticRun("upgrade-run", "W4 bridge tab upgrade", [semanticAgent("upgrade-agent", "Upgrade Agent")]);
+  const completedRun = semanticRun("upgrade-run", "W4 bridge tab upgrade", [semanticAgent("upgrade-agent", "Upgrade Agent", "completed")]);
+  let owned: ChildProcess | undefined;
+  let publisher: WebSocket | undefined;
+  const timings: Record<string, number> = {};
+  try {
+    owned = await startOwnedServer(serverA, port, join(rootA, "trajectory.lock"), "w4-bridge-build-a");
+    publisher = await connectLivePublisher(port, publisherId);
+    publisher.send(publisherState(publisherId, [run]));
+    await withChrome(`${base}/?view=run&run=${encodeURIComponent(`${publisherId}:upgrade-run`)}`, async (page) => {
+      await waitFor(page, "Boolean(document.querySelector('.workflow-head')) && document.body.dataset.view==='run'");
+      assert.equal(await page.evaluate("document.querySelector('meta[name=semantic-map-build]').content"), SEMANTIC_MAP_BUILD_STAMP);
+      await page.evaluate("document.getElementById('semantic-map-tab').click()");
+      await waitFor(page, "document.getElementById('semantic-map-status').textContent.startsWith('Partial graph')");
+
+      // In-place update while the tab is open: the loaded viewer keeps working; a reopen gets 503 and fails visibly.
+      const viewerJs = join(rootA, "trajectory", "assets", "semantic-map.js");
+      const originalJs = readFileSync(viewerJs);
+      const replacedJs = Buffer.from(originalJs);
+      replacedJs[replacedJs.length - 2] = replacedJs[replacedJs.length - 2] === 0x3b ? 0x20 : 0x3b;
+      writeFileSync(viewerJs, replacedJs);
+      publisher?.send(publisherState(publisherId, [completedRun]));
+      await delay(400);
+      assert.ok(String(await page.evaluate("document.getElementById('semantic-map-status').textContent")).startsWith("Partial graph"), "the already loaded viewer keeps following live state");
+      assert.equal((await fetch(`${base}/semantic-map.js?v=${SEMANTIC_MAP_BUILD_STAMP}`)).status, 503, "server A refuses its replaced viewer bytes");
+      await page.evaluate("document.getElementById('timeline-tab').click();document.getElementById('semantic-map-tab').click()");
+      let started = Date.now();
+      await waitLong(page, "/did not complete its secure handshake|assets could not load/.test(document.getElementById('semantic-map-status').textContent)", 15_000);
+      timings.inPlaceFailureMs = Date.now() - started;
+      assert.equal(await page.evaluate("document.querySelectorAll('#semantic-map-host iframe').length"), 0);
+      assert.equal(await page.evaluate("document.getElementById('semantic-map-retry').hidden"), false);
+      publisher?.send(publisherState(publisherId, [run]));
+      await delay(600);
+      assert.equal(await page.evaluate("document.querySelectorAll('#semantic-map-host iframe').length"), 0, "live state does not reopen the failed map");
+      writeFileSync(viewerJs, originalJs);
+      await page.evaluate("document.getElementById('semantic-map-retry').click()");
+      await waitFor(page, "document.getElementById('semantic-map-status').textContent.startsWith('Partial graph')");
+
+      // Upgrade: the owned server A stops and a coherent build B takes the port while the old tab stays open.
+      await stopOwnedServer(owned);
+      publisher?.close();
+      owned = await startOwnedServer(serverB, port, join(rootB, "trajectory.lock"), "w4-bridge-build-b");
+      publisher = await connectLivePublisher(port, publisherId);
+      publisher.send(publisherState(publisherId, [run]));
+      assert.equal((await fetch(`${base}/semantic-map.html?v=${SEMANTIC_MAP_BUILD_STAMP}&embed=1&theme=dark`)).status, 404, "server B never serves the old build's URL");
+      assert.equal((await fetch(`${base}/semantic-map.html?v=${stampB}&embed=1&theme=dark`)).status, 200);
+      await waitLong(page, "Boolean(document.querySelector('.workflow-head')) && document.querySelector('#sidebar [data-run]')", 10_000);
+      assert.equal(await page.evaluate("document.querySelector('meta[name=semantic-map-build]').content"), SEMANTIC_MAP_BUILD_STAMP, "the open tab still runs parent A");
+      await page.evaluate("document.getElementById('timeline-tab').click();document.getElementById('semantic-map-tab').click()");
+      started = Date.now();
+      await waitLong(page, "/did not complete its secure handshake|assets could not load/.test(document.getElementById('semantic-map-status').textContent)", 15_000);
+      timings.staleParentFailureMs = Date.now() - started;
+      assert.equal(await page.evaluate("document.querySelectorAll('#semantic-map-host iframe').length"), 0, "parent A never embeds build B's viewer");
+      // Retry is explicit and honest: the stale parent keeps failing instead of silently loading other bytes.
+      await page.evaluate("document.getElementById('semantic-map-retry').click()");
+      await waitFor(page, "document.getElementById('semantic-map-retry').hidden===true");
+      await waitLong(page, "document.getElementById('semantic-map-retry').hidden===false && /did not complete its secure handshake|assets could not load/.test(document.getElementById('semantic-map-status').textContent)", 15_000);
+      // Explicit reload upgrades the tab to parent B, whose map works with build B.
+      await page.command("Page.reload", { ignoreCache: true });
+      await waitLong(page, "document.readyState==='complete' && document.querySelector('meta[name=semantic-map-build]')?.content===" + JSON.stringify(stampB) + " && Boolean(document.querySelector('.workflow-head'))", 10_000);
+      await page.evaluate("document.getElementById('semantic-map-tab').click()");
+      await waitFor(page, "document.getElementById('semantic-map-status').textContent.startsWith('Partial graph')");
+      assert.equal(await page.evaluate(`[...document.querySelectorAll('#semantic-map-host iframe')].every(frame=>frame.src.includes('v=${stampB}'))`), true);
+      await page.evaluate("document.getElementById('timeline-tab').click()");
+      await waitFor(page, "document.querySelectorAll('#semantic-map-host iframe').length===0");
+    });
+    t.diagnostic(`Tab upgrade: in-place replaced viewer failure visible after ${String(timings.inPlaceFailureMs)} ms; stale parent A against server B failure visible after ${String(timings.staleParentFailureMs)} ms; recovery by explicit Retry (A) and explicit reload (B).`);
+  } finally {
+    publisher?.close();
+    await stopOwnedServer(owned);
+    rmSync(rootA, { recursive: true, force: true });
+    rmSync(rootB, { recursive: true, force: true });
   }
 });

@@ -2435,7 +2435,9 @@ test("session shutdown disposes active subagent sessions and rejects controls", 
 });
 
 test("uses RunStore worktrees and removes them after a standalone run", async () => {
-  const cwd = await mkdtemp(join(tmpdir(), "subagents-runstore-worktree-"));
+  // Short temp names: run worktrees nest the repository name twice below .worktrees/.pi/workflows/projects/..., and long
+  // fixture names alone push Windows real-git worktrees past MAX_PATH (git: "Filename too long").
+  const cwd = await mkdtemp(join(tmpdir(), "sa-wt-"));
   await writeFile(join(cwd, "README.md"), "base\n");
   await writeFile(join(cwd, ".gitignore"), "subagents-storage/\n");
   execFileSync("git", ["init", "-q"], { cwd });
@@ -2477,7 +2479,8 @@ test("uses RunStore worktrees and removes them after a standalone run", async ()
   }
 });
 test("isolates concurrent real-git worktrees with the same name", async () => {
-  const cwd = await mkdtemp(join(tmpdir(), "subagents-runstore-worktree-concurrent-"));
+  // Short temp name for Windows MAX_PATH; see "uses RunStore worktrees and removes them after a standalone run".
+  const cwd = await mkdtemp(join(tmpdir(), "sa-wtc-"));
   await writeFile(join(cwd, "README.md"), "base\n");
   await writeFile(join(cwd, ".gitignore"), "subagents-storage/\n");
   execFileSync("git", ["init", "-q"], { cwd });

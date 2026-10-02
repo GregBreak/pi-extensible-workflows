@@ -51,7 +51,9 @@ async function spawnWorkflowEditor(command: string, path: string): Promise<numbe
   if (!editor) return null;
   return new Promise((resolve) => {
     try {
-      const child = spawnExecutable(editor, [...editorArgs, path], { stdio: "inherit", windowsHide: true });
+      // EDITOR/VISUAL is trusted user configuration. Common Windows editors (for example VS Code's `code`) are plain
+      // batch launchers, so allow them explicitly; the launcher quotes every argument and never sets `shell: true`.
+      const child = spawnExecutable(editor, [...editorArgs, path], { stdio: "inherit", windowsHide: true }, { allowBatchFile: true });
       child.once("error", () => { resolve(null); });
       child.once("close", (code) => { resolve(code); });
     } catch { resolve(null); }

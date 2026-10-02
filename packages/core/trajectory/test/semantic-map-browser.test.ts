@@ -76,7 +76,7 @@ void test("pinned Archify assets adapt and incrementally render safe bounded wor
     const path = new URL(request.url ?? "/", "http://127.0.0.1").pathname; requested.push(path);
     const csp = "default-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src data:; font-src data:; connect-src 'none'; worker-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'";
     response.setHeader("content-security-policy", csp); response.setHeader("x-content-type-options", "nosniff"); response.setHeader("cache-control", "no-store");
-    if (path === "/semantic-map.html") { response.writeHead(200, { "content-type": "text/html; charset=utf-8" }); response.end(htmlAsset.replace("</body>", `${fixtureScript}</body>`)); }
+    if (path === "/semantic-map.html") { response.writeHead(200, { "content-type": "text/html; charset=utf-8" }); response.end(htmlAsset.replace("</body>", `<link rel="stylesheet" href="/semantic-map.css"><script src="/semantic-map.js"></script>${fixtureScript}</body>`)); }
     else if (path === "/semantic-map.js") { response.writeHead(200, { "content-type": "text/javascript; charset=utf-8" }); response.end(jsAsset); }
     else if (path === "/semantic-map.css") { response.writeHead(200, { "content-type": "text/css; charset=utf-8" }); response.end(cssAsset); }
     else { response.writeHead(404); response.end(); }
@@ -85,13 +85,21 @@ void test("pinned Archify assets adapt and incrementally render safe bounded wor
   try {
     await runChrome(`http://127.0.0.1:${String(port)}/semantic-map.html?embed=1`, root, async (evaluate) => {
       const initial = JSON.parse(String(await evaluate("JSON.stringify(window.__semanticMapCase)"))) as { first: { nodes: unknown[]; edges: unknown[] }; geometry: boolean; injectionSafe: boolean; noExternalLinkAttrs: boolean; snapshot: { run: { agents: Array<Record<string, unknown>> } }; childId: string; camera: { scale?: number }; viewBox: string; positions: Record<string, string> };
-      assert.equal(initial.first.nodes.length, 1 + 3 + 2 + 3 + 1 + 2, "workflow, agents, tasks, results, tool and attempt nodes are present");
+      assert.equal(initial.first.nodes.length, 1 + 3 + 2 + 3 + 1, "workflow, agents, tasks, results and tool nodes are present; retries are counted on the agent card");
       assert.ok(initial.first.edges.some((edge) => (edge as { kind: string }).kind === "dependency"));
       assert.ok(initial.first.edges.some((edge) => (edge as { kind: string }).kind === "fork"));
       assert.ok(initial.first.edges.some((edge) => (edge as { kind: string }).kind === "merge"));
-      assert.ok(initial.first.edges.some((edge) => (edge as { kind: string }).kind === "retry"));
+      const retried = await evaluate("(()=>{const n=[...document.querySelectorAll('.semantic-map-node[data-node-kind=agent]')].find(e=>e.getAttribute('data-node-label')==='Workflow root');return n?{cls:n.getAttribute('class'),count:n.querySelector('.semantic-map-retry-count').textContent,loop:getComputedStyle(n.querySelector('.semantic-map-retry-loop')).display,inner:getComputedStyle(n.querySelector('.semantic-map-node-inner')).display}:null})()");
+      assert.deepEqual(retried, { cls: "semantic-map-node kind-agent node-had-failure node-retried", count: "x2", loop: "inline", inner: "inline" }, "one card: inner red frame for the failed attempt and a x2 retry loop");
       assert.equal(initial.geometry, true); assert.equal(initial.injectionSafe, true); assert.equal(initial.noExternalLinkAttrs, true);
       assert.ok(initial.childId.startsWith("sm-"));
+      const grouped = await evaluate(`(()=>{const groups=[...document.querySelectorAll('.semantic-map-agent-group')];return {agents:groups.map(group=>group.getAttribute('data-agent-id')).sort(),owned:groups.every(group=>[...group.querySelectorAll('.semantic-map-node')].every(node=>node.getAttribute('data-agent-id')===group.getAttribute('data-agent-id'))),titles:[...document.querySelectorAll('.semantic-map-group-label')].map(node=>node.textContent),inert:document.querySelectorAll('.semantic-map-group-background img, .semantic-map-group-background script').length}})()`);
+      assert.ok(grouped && typeof grouped === "object");
+      const grouping = grouped as { agents: string[]; owned: boolean; titles: string[]; inert: number };
+      assert.deepEqual(grouping.agents, ["child", "root", "worker"]);
+      assert.equal(grouping.owned, true, "attempts, tools and results are DOM children of their recorded agent group");
+      assert.ok(grouping.titles.includes("Workflow root") && grouping.titles.includes("Worker"));
+      assert.equal(grouping.inert, 0);
       const childResultId = await evaluate(`(function(){ var api=Archify.finder; api.refresh(); return api.select(${JSON.stringify(initial.childId)}); })()`);
       assert.equal(childResultId, true); assert.equal(await evaluate("Archify.focus.active()"), initial.childId);
       const cameraProbe = await evaluate("(function(){var before=Archify.view.state();Archify.view.zoomIn();var zoom=Archify.view.state();Archify.view.centerAt(700,500,{scale:1.5,instant:true});window.dispatchEvent(new Event('resize'));return {before:before,zoom:Archify.view.state(),slots:Array.from(document.querySelectorAll('.semantic-map-node')).map(n=>n.getAttribute('transform')).join('|')};})()");
@@ -106,9 +114,11 @@ void test("pinned Archify assets adapt and incrementally render safe bounded wor
       assert.equal(await evaluate("Archify.view.state().scale"), stable.camera.scale);
       assert.deepEqual(await evaluate("Archify.view.state()"), stable.camera);
       const insert = await evaluate(`(function(){ var s=window.__semanticMapCase.snapshot; s.run.agents.push({id:'new-agent',name:'Inserted live',state:'running',output:{status:'pending'}}); s.relations.push({kind:'dependency',fromAgentId:'root',toAgentId:'new-agent',evidence:'recorded'}); window.SemanticMap.render(s); return {nodes:document.querySelectorAll('.diagram-container svg [data-node-id]').length,finder:Archify.finder.count,camera:Archify.view.state(),stable:JSON.stringify(window.__semanticMapCase.positions)===JSON.stringify(Object.fromEntries(Array.from(document.querySelectorAll('.diagram-container svg [data-node-id]')).filter(n=>Object.hasOwn(window.__semanticMapCase.positions,n.getAttribute('data-node-id'))).map(n=>[n.getAttribute('data-node-id'),n.getAttribute('transform')]))),geometry:Array.from(document.querySelectorAll('.semantic-map-edge path')).every(p=>p.getTotalLength()>0)}; })()`);
-      assert.deepEqual(insert, { nodes: 14, finder: 14, camera: stable.camera, stable: true, geometry: true });
+      // Drawn cards: 4 agents, 4 results and 1 tool; workflow/scope nodes are written on the boxes instead of drawn as cards.
+      assert.deepEqual(insert, { nodes: 9, finder: 9, camera: stable.camera, stable: true, geometry: true });
       const remove = await evaluate(`(function(){ var s=window.__semanticMapCase.snapshot; s.run.agents=s.run.agents.filter(a=>a.id!=='child'); window.SemanticMap.render(s); return {focus:Archify.focus.active(),found:document.querySelectorAll('.diagram-container svg [data-node-id]').length,count:Archify.finder.count,camera:Archify.view.state()}; })()`);
-      assert.deepEqual(remove, { focus: null, found: 10, count: 10, camera: stable.camera });
+      assert.deepEqual(remove, { focus: null, found: 7, count: 7, camera: stable.camera }, "removing an agent removes its card and result card");
+      assert.equal(await evaluate("document.querySelectorAll('.semantic-map-agent-group[data-agent-id=child]').length"), 0, "removed agents leave no group behind");
     });
     const paths = requested.filter((path) => path !== "/favicon.ico");
     assert.ok(paths.includes("/semantic-map.html") && paths.includes("/semantic-map.js") && paths.includes("/semantic-map.css"));

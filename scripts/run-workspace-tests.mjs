@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
-import { globSync } from "node:fs";
+import { globSync, statSync } from "node:fs";
 import { mkdtemp, mkdir, rm } from "node:fs/promises";
-import { dirname, resolve } from "node:path";
+import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 
@@ -30,20 +30,48 @@ function parseArgs(args) {
   }
 }
 
-function selectedPatterns() {
+// TEST_FILES contract: a value starting with "[" must be a JSON array of non-empty workspace-relative paths or globs
+// (required for names containing spaces or semicolons); any other value is the legacy whitespace/semicolon list.
+// Every entry must select at least one file. --exclude removes glob matches, while an entry naming an existing file
+// exactly is an explicit request and runs even if excluded. Without TEST_FILES, --pattern discovery applies --exclude.
+function testFileSelection() {
   const supplied = process.env.TEST_FILES?.trim();
-  return supplied ? supplied.split(/[\s;]+/).filter(Boolean) : options.patterns;
+  if (!supplied) return undefined;
+  if (!supplied.startsWith("[")) return supplied.split(/[\s;]+/).filter(Boolean);
+  let parsed;
+  try { parsed = JSON.parse(supplied); }
+  catch (error) { throw new Error(`TEST_FILES is not a valid JSON array of paths: ${error instanceof Error ? error.message : String(error)}`, { cause: error }); }
+  if (!Array.isArray(parsed) || parsed.length === 0 || parsed.some((entry) => typeof entry !== "string" || !entry.trim())) {
+    throw new Error("TEST_FILES JSON must be a non-empty array of non-empty path strings");
+  }
+  return parsed;
+}
+
+const toPosix = (path) => path.replaceAll("\\", "/");
+
+function isFile(path) {
+  try { return statSync(path).isFile(); } catch { return false; }
 }
 
 function discoverFiles(workspaceRoot) {
-  const patterns = selectedPatterns();
+  const explicitEntries = testFileSelection();
+  const patterns = explicitEntries ?? options.patterns;
   if (!patterns.length) throw new Error("No test discovery patterns were provided");
+  const excludes = new Set(options.excludes.map(toPosix));
   const selected = new Set();
   for (const pattern of patterns) {
-    for (const file of globSync(pattern.replaceAll("\\", "/"), { cwd: workspaceRoot })) selected.add(file.replaceAll("\\", "/"));
+    const normalized = toPosix(pattern);
+    if (explicitEntries && isAbsolute(normalized)) throw new Error(`TEST_FILES entry ${pattern} must be relative to the workspace`);
+    const exact = explicitEntries !== undefined && isFile(resolve(workspaceRoot, normalized));
+    const matches = exact ? [normalized] : globSync(normalized, { cwd: workspaceRoot }).map(toPosix).filter((file) => !excludes.has(file));
+    if (explicitEntries && matches.length === 0) throw new Error(`TEST_FILES entry ${pattern} matched no runnable test file (use a JSON array for names with spaces or semicolons)`);
+    for (const file of matches) {
+      const inside = relative(workspaceRoot, resolve(workspaceRoot, file));
+      if (!inside || inside === ".." || inside.startsWith(`..${sep}`) || isAbsolute(inside)) throw new Error(`Test file ${file} resolves outside the workspace`);
+      selected.add(toPosix(inside));
+    }
   }
-  const excludes = new Set((process.env.TEST_FILES?.trim() ? [] : options.excludes).map((path) => path.replaceAll("\\", "/")));
-  return [...selected].filter((file) => !excludes.has(file)).sort();
+  return [...selected].sort();
 }
 
 function childEnvironment(directory) {
@@ -68,15 +96,33 @@ function childEnvironment(directory) {
 const active = new Set();
 let abortSignal;
 
+const stopping = new Map();
+
+// Returns once the kill request completed. A worker that already exited is skipped: its PID is no longer owned.
 function killTree(child) {
-  if (process.platform === "win32" && child.pid) {
-    const killer = spawn("taskkill", ["/pid", String(child.pid), "/t", "/f"], { stdio: "ignore", windowsHide: true });
-    killer.unref();
-  } else if (child.pid) {
+  if (!child.pid || child.exitCode !== null || child.signalCode !== null) return Promise.resolve();
+  if (stopping.has(child)) return stopping.get(child);
+  let request = Promise.resolve();
+  if (process.platform === "win32") {
+    request = new Promise((done) => {
+      const killer = spawn("taskkill", ["/pid", String(child.pid), "/t", "/f"], { stdio: "ignore", windowsHide: true });
+      killer.once("error", () => done());
+      killer.once("close", () => done());
+    });
+  } else {
     try { process.kill(-child.pid, "SIGTERM"); } catch { child.kill("SIGTERM"); }
     const timer = globalThis.setTimeout(() => { try { process.kill(-child.pid, "SIGKILL"); } catch { /* The process already exited. */ } }, 2_000);
     timer.unref();
   }
+  stopping.set(child, request);
+  return request;
+}
+
+// After a failed, timed-out or cancelled POSIX worker closes, descendants left in its own process group are still
+// owned (the group id cannot be reused while members exist). Windows descendants are stopped with the worker's job.
+function stopOwnedGroup(child) {
+  if (process.platform === "win32" || !child.pid) return;
+  try { process.kill(-child.pid, "SIGKILL"); } catch { /* The owned group has no remaining members. */ }
 }
 
 async function executeFile(file, workspaceRoot) {
@@ -99,9 +145,15 @@ async function executeFile(file, workspaceRoot) {
     child.once("error", (error) => { active.delete(child); void rm(isolated, { recursive: true, force: true }).then(() => reject(error), reject); });
     child.once("close", (code, signal) => {
       active.delete(child);
-      void rm(isolated, { recursive: true, force: true }).then(() => resolvePromise({ file, code: code ?? 1, signal }), reject);
+      // Wait for any kill request so the owned tree is stopped before its HOME/temp directory is removed.
+      const settled = stopping.get(child) ?? Promise.resolve();
+      stopping.delete(child);
+      void settled
+        .then(() => { if (code !== 0 || signal || abortSignal) stopOwnedGroup(child); })
+        .then(() => rm(isolated, { recursive: true, force: true }))
+        .then(() => resolvePromise({ file, code: code ?? 1, signal }), reject);
     });
-    if (abortSignal) killTree(child);
+    if (abortSignal) void killTree(child);
   });
 }
 
@@ -112,7 +164,7 @@ async function main() {
   if (!Number.isInteger(options.concurrency) || options.concurrency < 1 || options.concurrency > 20) throw new Error("Test concurrency must be between 1 and 20");
   const workspaceRoot = resolve(repositoryRoot, relativeWorkspace);
   const files = discoverFiles(workspaceRoot);
-  if (files.length === 0) throw new Error(`No tests matched ${selectedPatterns().join(", ")}`);
+  if (files.length === 0) throw new Error(`No tests matched ${(testFileSelection() ?? options.patterns).join(", ")}`);
   const failures = [];
   let next = 0;
   const worker = async () => {
@@ -125,7 +177,7 @@ async function main() {
   const workers = Array.from({ length: Math.min(options.concurrency, files.length) }, worker);
   const stop = (signal) => {
     abortSignal = signal;
-    for (const child of active) killTree(child);
+    for (const child of active) void killTree(child);
   };
   const onSigint = () => stop("SIGINT");
   const onSigterm = () => stop("SIGTERM");
@@ -137,7 +189,7 @@ async function main() {
     if (cancellationTimer) globalThis.clearTimeout(cancellationTimer);
     process.removeListener("SIGINT", onSigint);
     process.removeListener("SIGTERM", onSigterm);
-    for (const child of active) killTree(child);
+    await Promise.all([...active].map(killTree));
   }
   if (abortSignal) process.exitCode = abortSignal === "SIGINT" ? 130 : 143;
   else if (failures.length) {

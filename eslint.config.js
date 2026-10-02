@@ -26,6 +26,8 @@ export default tseslint.config(
     languageOptions: {
       globals: { Archify: "readonly", document: "readonly", Event: "readonly", getComputedStyle: "readonly", location: "readonly", parent: "readonly", self: "readonly", window: "readonly" },
     },
+    // Pinned d341dbf feasibility bytes (see PROVENANCE.md); keep them unchanged instead of rewriting duplicate declarations.
+    rules: { "no-dupe-keys": "off", "no-redeclare": "off" },
   },
   {
     files: ["packages/core/bench/**/*.mjs"],

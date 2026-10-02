@@ -1,4 +1,5 @@
-import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { cp } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
 import { builtinModules } from "node:module";
 import { createRequire } from "node:module";
@@ -523,14 +524,14 @@ function roleMarkdown(role: AgentDefinition): string {
   return `${metadata.join("\n")}\n${role.prompt ?? ""}\n`;
 }
 
-function copyResources(root: string, resources: PortableWorkflowBundleResources | undefined): PortableWorkflowManifest["payload"] {
+async function copyResources(root: string, resources: PortableWorkflowBundleResources | undefined): Promise<PortableWorkflowManifest["payload"]> {
   if (!resources) return undefined;
   const payload: NonNullable<PortableWorkflowManifest["payload"]> = {};
   const sensitive = (source: string): boolean => {
     const name = basename(source).toLowerCase();
     return ["auth.json", "models.json", ".env", ".npmrc"].includes(name) || name.endsWith(".pem") || name.endsWith(".key");
   };
-  const copy = (kind: "extensions" | "skills" | "static" | "dependencies", paths: readonly string[] | undefined): void => {
+  const copy = async (kind: "extensions" | "skills" | "static" | "dependencies", paths: readonly string[] | undefined): Promise<void> => {
     if (!paths?.length) return;
     const names: string[] = [];
     for (const source of paths) {
@@ -545,15 +546,16 @@ function copyResources(root: string, resources: PortableWorkflowBundleResources 
       if (names.includes(name)) throw new Error(`Duplicate bundle resource name: ${name}`);
       const destination = kind === "dependencies" ? join(root, "payload", "node_modules", ...name.split("/")) : join(root, "payload", kind === "static" ? "resources" : kind, name);
       mkdirSync(dirname(destination), { recursive: true });
-      cpSync(source, destination, { recursive: true });
+      // NOTE: Node 22's native recursive cpSync aborts the whole process (0xC0000409) on Windows for directory sources under non-ASCII paths; the promise API keeps the same copy semantics without that crash.
+      await cp(source, destination, { recursive: true });
       names.push(name);
     }
     payload[kind] = names;
   };
-  copy("extensions", resources.extensions);
-  copy("skills", resources.skills);
-  copy("static", resources.static);
-  copy("dependencies", resources.dependencies);
+  await copy("extensions", resources.extensions);
+  await copy("skills", resources.skills);
+  await copy("static", resources.static);
+  await copy("dependencies", resources.dependencies);
   return Object.keys(payload).length ? payload : undefined;
 }
 
@@ -594,7 +596,7 @@ function baseManifest(input: PortableWorkflowBundleInput, version: 1 | 2): Porta
   };
 }
 
-function writeBundleFiles(input: PortableWorkflowBundleInput, manifest: PortableWorkflowManifest, workflowSource: string, bundledExtensionSource: string): PortableWorkflowManifest {
+async function writeBundleFiles(input: PortableWorkflowBundleInput, manifest: PortableWorkflowManifest, workflowSource: string, bundledExtensionSource: string): Promise<PortableWorkflowManifest> {
   const parent = dirname(input.destination);
   mkdirSync(parent, { recursive: true });
   if (existsSync(input.destination) && !input.force) throw new Error(`Destination already exists: ${input.destination}; use --force to replace it`);
@@ -611,7 +613,7 @@ function writeBundleFiles(input: PortableWorkflowBundleInput, manifest: Portable
         writeFileSync(join(roleDirectory, `${name}.md`), roleMarkdown(role), { encoding: "utf8", mode: 0o600 });
       }
     }
-    const copiedPayload = copyResources(temporary, input.resources);
+    const copiedPayload = await copyResources(temporary, input.resources);
     if (copiedPayload) manifest.payload = copiedPayload;
     const extensionPaths = input.resources?.extensions ?? [];
     writeFileSync(join(payload, "extension.mjs"), bundledExtensionSource, { encoding: "utf8", mode: 0o600 });

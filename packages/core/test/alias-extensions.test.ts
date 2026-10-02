@@ -599,7 +599,7 @@ void test("extension roles flow through host guidance, preflight, launch snapsho
   const roleDirectory = join(home, "roles");
   const roleExtension = join(home, "role-extension.ts");
   mkdirSync(roleDirectory, { recursive: true });
-  writeFileSync(join(roleDirectory, "extension-reviewer.md"), `---\ndescription: Packaged review role\nmodel: anthropic/opus:high\ntools: [read, grep]\nskills: [role-skill]\nextensions: ["${roleExtension}"]\n---\nExtension prompt`);
+  writeFileSync(join(roleDirectory, "extension-reviewer.md"), `---\ndescription: Packaged review role\nmodel: anthropic/opus:high\ntools: [read, grep]\nskills: [role-skill]\nextensions: [${JSON.stringify(roleExtension)}]\n---\nExtension prompt`);
   const inputs: SessionInput[] = [];
   const prompts: string[] = [];
   const tools: Array<{ name: string; execute: (...args: unknown[]) => Promise<{ content: Array<{ text: string }>; details?: unknown }> }> = [];

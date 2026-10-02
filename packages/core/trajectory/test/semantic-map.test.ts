@@ -47,7 +47,9 @@ void test("semantic adapter preserves cancellation, missing output, recorded ret
   assert.equal(graph.nodes.find((node) => node.sourceRef === "cancel" && node.kind === "agent")?.state, "cancelled");
   assert.equal(graph.nodes.find((node) => node.sourceRef === "unknown" && node.kind === "result")?.state, "unknown");
   assert.equal(graph.nodes.find((node) => node.sourceRef === "budget" && node.kind === "agent")?.rawStatus, "budget_exhausted");
-  assert.equal(graph.edges.filter((edge) => edge.kind === "retry").length, 2, "only explicit attempt history and retry provenance create retry edges");
+  assert.equal(graph.edges.filter((edge) => edge.kind === "retry").length, 1, "only run retry provenance creates a retry edge; attempts are counted on the agent card");
+  const retried = graph.nodes.find((node) => node.sourceRef === "retry" && node.kind === "agent");
+  assert.deepEqual([retried?.attempts, retried?.failedAttempts], [2, 1]);
   assert.ok(graph.edges.some((edge) => edge.kind === "fork"));
   assert.ok(graph.edges.some((edge) => edge.kind === "merge"));
   const parentRun = source().run;
@@ -81,7 +83,9 @@ void test("standalone subagent attempts and tool calls use their own stable scop
     subagent: { id: "solo", label: "Standalone", state: "completed", attempts: 2, attemptDetails: [{ attempt: 1, error: { code: "RETRY" } }, { attempt: 2 }], output: { status: "available" }, progress: { toolCalls: [{ id: "call", name: "grep", state: "completed" }] } }
   });
   assert.ok(graph.nodes.some((node) => node.kind === "tool-call" && node.sourceRef === "solo/call"));
-  assert.equal(graph.edges.filter((edge) => edge.kind === "retry").length, 1);
+  assert.equal(graph.edges.filter((edge) => edge.kind === "retry").length, 0);
+  const solo = graph.nodes.find((node) => node.kind === "agent" && node.sourceRef === "solo");
+  assert.deepEqual([solo?.attempts, solo?.failedAttempts], [2, 1]);
   assert.equal(graph.scope.targetKind, "subagent");
 });
 
@@ -127,6 +131,39 @@ void test("graph caps omit rather than retain stale nodes and expose bounded par
   const reduced = adaptSemanticSnapshot({ scope: { publisherId: "p", targetKind: "run", targetId: "r" }, run: { id: "r", state: "running", agents: [] } });
   assert.equal(reduced.nodes.length, 1);
   assert.equal(reduced.nodes.some((node) => node.id === graph.nodes[1]?.id), false);
+});
+
+void test("dense relations at the payload bound keep the longest fitting prefix without quadratic work", () => {
+  // 600 agents and 1797 recorded relations: nominally 1201 nodes, so the node cap and then the 512 KiB payload bound apply.
+  const agents = Array.from({ length: 600 }, (_, index) => ({ id: `a${String(index)}`, name: `Agent ${String(index)}`, state: "running", output: { status: "pending" } }));
+  const relations = agents.flatMap((agent, index) => [1, 2, 3].flatMap((distance) => index + distance < agents.length ? [{ kind: distance === 2 ? "fork" as const : "dependency" as const, fromAgentId: agent.id, toAgentId: `a${String(index + distance)}`, evidence: "recorded" as const }] : []));
+  const started = performance.now();
+  const graph = adaptSemanticSnapshot({ scope: { publisherId: "p", targetKind: "run", targetId: "t" }, run: { id: "t", state: "running", agents }, relations });
+  const elapsed = performance.now() - started;
+  const bytes = new TextEncoder().encode(JSON.stringify(graph)).byteLength;
+  assert.ok(bytes <= 512 * 1024);
+  assert.ok(graph.completeness.reasons.includes("Rendered graph exceeds bridge payload limit"));
+  const ids = new Set(graph.nodes.map((node) => node.id));
+  assert.ok(graph.edges.every((edge) => ids.has(edge.from) && ids.has(edge.to)), "only edges inside the kept prefix survive");
+  assert.equal(graph.nodes[0]?.kind, "workflow");
+  const again = adaptSemanticSnapshot({ scope: { publisherId: "p", targetKind: "run", targetId: "t" }, run: { id: "t", state: "running", agents }, relations });
+  assert.deepEqual(again, graph, "deterministic");
+  // Former per-node serialization and O(V*E) cycle checks took seconds here; the indexed build stays well below that.
+  assert.ok(elapsed < 2_000, `adapting the payload-bound graph took ${elapsed.toFixed(0)} ms`);
+});
+
+void test("duplicate and cyclic causal relations are still omitted with the indexed edge build", () => {
+  const agents = ["x", "y", "z"].map((id) => ({ id, name: id, state: "running" }));
+  const relations = [
+    { kind: "dependency" as const, fromAgentId: "x", toAgentId: "y", evidence: "recorded" as const },
+    { kind: "dependency" as const, fromAgentId: "x", toAgentId: "y", evidence: "recorded" as const },
+    { kind: "fork" as const, fromAgentId: "y", toAgentId: "z", evidence: "recorded" as const },
+    { kind: "merge" as const, fromAgentId: "z", toAgentId: "x", evidence: "recorded" as const }
+  ];
+  const graph = adaptSemanticSnapshot({ scope: { publisherId: "p", targetKind: "run", targetId: "t" }, run: { id: "t", state: "running", agents }, relations });
+  const causal = graph.edges.filter((edge) => ["dependency", "fork", "merge"].includes(edge.kind));
+  assert.deepEqual(causal.map((edge) => edge.kind).sort(), ["dependency", "fork"]);
+  assert.ok(graph.completeness.reasons.includes("Cyclic causal relation omitted"));
 });
 
 void test("scope and identifiers reject malformed or oversized identity components", () => {

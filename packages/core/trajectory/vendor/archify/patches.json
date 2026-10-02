@@ -13,10 +13,10 @@
   },
   {
     "find": "</head>",
-    "replacement": "  <link rel=\"stylesheet\" href=\"/semantic-map.css\">\n  <meta name=\"semantic-map-build\" content=\"__SEMANTIC_MAP_BUILD_STAMP__\">\n</head>"
+    "replacement": "  <link rel=\"stylesheet\" href=\"/semantic-map.css?v=__SEMANTIC_MAP_BUILD_STAMP__\">\n  <meta name=\"semantic-map-build\" content=\"__SEMANTIC_MAP_BUILD_STAMP__\">\n</head>"
   },
   {
     "find": "</body>",
-    "replacement": "  <script src=\"/semantic-map.js\"></script>\n</body>"
+    "replacement": "  <script src=\"/semantic-map.js?v=__SEMANTIC_MAP_BUILD_STAMP__\"></script>\n</body>"
   }
 ]

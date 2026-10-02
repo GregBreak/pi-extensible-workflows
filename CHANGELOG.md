@@ -1,6 +1,20 @@
 # Changelog
 ## Unreleased
 
+### New capabilities
+
+- Trajectory has an optional **Semantic Map** tab beside the default Gantt. Nothing about the map loads until you click the tab. It then opens a pinned, standalone Archify viewer in an opaque `allow-scripts`-only sandbox and sends it bounded, allowlisted live snapshots over one private message port. The viewer opens no second WebSocket and has no storage or telemetry. The map shows at most 16 agents, 8 recorded relations and 16 tool calls per agent. The viewer payload is capped at 512 KiB, 500 nodes and 1500 edges. Closing or hiding the tab stops all map work. The map is live-only: static exports and shared reports keep the Gantt and explain that the map is not included.
+- The three Semantic Map assets are served only at build-versioned URLs (`?v=<stamp>`), with a strict CSP, `nosniff`, `no-referrer` and `no-store`. A missing, duplicate, malformed or stale version gets 404. Asset bytes that no longer match the running server's build get 503. A page from an older build shows an explicit Retry instead of reopening the map on its own.
+
+### Fixes
+
+- Native Windows development no longer needs Bash or POSIX helpers. Build, test runners, process launching and the package verifier run from `cmd` and PowerShell, and test fixtures isolate `HOME`/`USERPROFILE`.
+- `piewf doctor` no longer crashes (0xC0000409) on Node 22 when it copies to a path with non-ASCII characters on Windows.
+- The Herdr extension listens on a named pipe on Windows instead of a filesystem socket, which failed with `EACCES`.
+- A failed workflow recovery releases its retry reservation before it reports the failure, so an immediate retry is accepted.
+- The Trajectory server decodes WebSocket frames incrementally. It accepts valid frames that arrive coalesced or split, and rejects oversized or invalid frames early.
+- A stale Trajectory server whose PID was reused is signalled only when its PID, start time and fingerprint all match the lock. Otherwise only the unproven lock is removed.
+
 ## [5.17.0] - 2026-09-23
 
 ### New capabilities

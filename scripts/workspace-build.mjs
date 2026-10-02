@@ -39,12 +39,11 @@ async function buildCore() {
   await cp(resolve(workspace, "starter/roles"), resolve(workspace, "dist/starter/roles"), { recursive: true });
   await cp(resolve(workspace, "trajectory/src/assets"), resolve(workspace, "dist/trajectory/src/assets"), { recursive: true });
   await cp(resolve(workspace, "trajectory/src/assets"), resolve(workspace, "dist/trajectory/assets"), { recursive: true });
-  const esbuild = "bin/esbuild";
-  await runPackageTool(workspace, "esbuild", esbuild, [
-    "src/index.ts", "starter/index.ts", "subagents/index.ts", "trajectory/index.ts",
-    "--bundle", "--format=esm", "--platform=node", "--packages=external", "--sourcemap", "--sources-content=false", "--outbase=.", "--outdir=dist",
-  ]);
-  await runPackageTool(workspace, "esbuild", esbuild, ["trajectory/src/server.ts", "--bundle", "--format=esm", "--platform=node", "--sourcemap", "--sources-content=false", "--outfile=dist/trajectory/src/server.js"]);
+  // Use the declared esbuild JavaScript API: on non-Windows installs bin/esbuild may be the native executable, not JS.
+  const esbuild = createRequire(resolve(workspace, "package.json"))("esbuild");
+  const common = { bundle: true, format: "esm", platform: "node", sourcemap: true, sourcesContent: false, absWorkingDir: workspace, logLevel: "warning" };
+  await esbuild.build({ ...common, entryPoints: ["src/index.ts", "starter/index.ts", "subagents/index.ts", "trajectory/index.ts"], packages: "external", outbase: ".", outdir: "dist" });
+  await esbuild.build({ ...common, entryPoints: ["trajectory/src/server.ts"], outfile: "dist/trajectory/src/server.js" });
 }
 
 async function buildCli() {

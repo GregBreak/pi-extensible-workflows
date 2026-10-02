@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -48,17 +48,25 @@ void test("exportTrajectoryRunHtml renders a self-contained static run report", 
     await assert.rejects(exportTrajectoryRunHtml({ cwd, sessionId: "session", runId: "missing", home }), /was not found/);
 
     const stubGh = join(root, "gh stub.mjs");
-    writeFileSync(stubGh, "import { copyFileSync } from 'node:fs'; copyFileSync(process.argv.at(-1), process.env.GH_STUB_CAPTURE); process.stdout.write('https://gist.github.com/user/abc123def456\\n');\n");
+    writeFileSync(stubGh, "import { copyFileSync, writeFileSync } from 'node:fs'; copyFileSync(process.argv.at(-1), process.env.GH_STUB_CAPTURE); writeFileSync(process.env.GH_STUB_ARGS, JSON.stringify(process.argv.slice(2))); process.stdout.write('https://gist.github.com/user/abc123def456\\n');\n");
     const capture = join(root, "captured.html");
+    const argsCapture = join(root, "captured-args.json");
     process.env.GH_STUB_CAPTURE = capture;
+    process.env.GH_STUB_ARGS = argsCapture;
     try {
       const shared = await shareTrajectoryRun({ cwd, sessionId: "session", runId: "run", home, ghPath: stubGh });
       assert.equal(shared.gistUrl, "https://gist.github.com/user/abc123def456");
       assert.equal(shared.shareUrl, "https://vekexasia.github.io/pi-extensible-workflows/run.html#abc123def456");
       // The gist payload is the export itself under the viewer's default file name.
       assert.ok(readFileSync(capture, "utf8").includes("window.__PIEWF_STATIC__"));
+      // The stub ran as a real child process with literal argv; the temporary upload copy is removed afterwards.
+      const ghArgs = JSON.parse(readFileSync(argsCapture, "utf8")) as string[];
+      assert.deepEqual(ghArgs.slice(0, 3), ["gist", "create", "--public=false"]);
+      assert.match(ghArgs[3] ?? "", /piewf-share-.*trajectory\.html$/);
+      assert.equal(existsSync(ghArgs[3] ?? ""), false);
     } finally {
       delete process.env.GH_STUB_CAPTURE;
+      delete process.env.GH_STUB_ARGS;
     }
     const badGh = join(root, "gh bad.mjs");
     writeFileSync(badGh, "process.stderr.write('gh: not logged in\\n'); process.exitCode = 1;\n");
